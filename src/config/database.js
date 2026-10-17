@@ -1,90 +1,92 @@
 // src/config/database.js
-// Adjust the path if your existing database.js is in another folder.
 
 import pg from "pg";
 import env from "./env.js";
 
 const { Pool } = pg;
 
+const database = env.database || {};
+
+const databaseUrl = String(database.url || "").trim();
+
+const hasSslMode =
+  /[?&]sslmode=/i.test(databaseUrl);
+
+const isNeon =
+  /\.neon\.tech(?:[/:?]|$)/i.test(databaseUrl);
+
 // =========================================================
 // DATABASE CONFIGURATION
 // =========================================================
 
-const database = env.database || {};
+let poolConfig;
 
-// Prefer DATABASE_URL for Neon or another hosted PostgreSQL.
-// Keep compatibility with optional URL fields in env.js.
-const databaseUrl =
-  process.env.DATABASE_URL ||
-  database.url ||
-  database.databaseUrl ||
-  database.connectionString ||
-  "";
+if (databaseUrl) {
+  // -------------------------------------------------------
+  // RENDER + NEON
+  // -------------------------------------------------------
 
-// Detect SSL options already supplied inside the URL.
-// node-postgres warns that URL SSL parameters can override
-// an explicitly supplied ssl object.
-const hasSslOptionsInUrl =
-  /[?&](sslmode|sslcert|sslkey|sslrootcert)=/i.test(
-    databaseUrl
-  );
+  poolConfig = {
+    connectionString: databaseUrl,
 
-// Detect a Neon connection string.
-const isNeon =
-  typeof databaseUrl === "string" &&
-  /\.neon\.tech(?:[/:?]|$)/i.test(databaseUrl);
-
-// Enable SSL for Neon, or when explicitly requested.
-const useSsl =
-  isNeon ||
-  process.env.DB_SSL === "true" ||
-  database.ssl === true;
-
-// If the URL already specifies SSL settings, allow pg to
-// interpret them instead of overriding them with an object.
-const sslConfig =
-  useSsl && !hasSslOptionsInUrl
-    ? { rejectUnauthorized: false }
-    : undefined;
-
-// =========================================================
-// POOL OPTIONS
-// =========================================================
-
-const poolConfig = databaseUrl
-  ? {
-      // Neon connection string
-      connectionString: databaseUrl,
-
-      ...(sslConfig ? { ssl: sslConfig } : {}),
-
-      max: Number(process.env.DB_POOL_MAX || 10),
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 15000,
-      keepAlive: true,
-    }
-  : {
-      // Existing host-based PostgreSQL configuration
-      host: database.host,
-      port: Number(database.port || 5432),
-      database: database.name,
-      user: database.user,
-      password: database.password,
-
-      ...(useSsl
+    // Neon connection strings should normally include
+    // sslmode=require. Do not override SSL options already
+    // supplied in the URL.
+    ...(
+      isNeon && !hasSslMode
         ? {
-            ssl:
-              typeof database.ssl === "object"
-                ? database.ssl
-                : { rejectUnauthorized: false },
+            ssl: {
+              rejectUnauthorized: false,
+            },
           }
-        : {}),
+        : {}
+    ),
 
-      max: Number(process.env.DB_POOL_MAX || 10),
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 15000,
-      keepAlive: true,
-    };
+    max: database.poolMax || 10,
+
+    idleTimeoutMillis:
+      database.idleTimeoutMillis || 30000,
+
+    connectionTimeoutMillis:
+      database.connectionTimeoutMillis || 15000,
+
+    keepAlive: true,
+  };
+} else {
+  // -------------------------------------------------------
+  // LOCAL POSTGRESQL FALLBACK
+  // -------------------------------------------------------
+
+  poolConfig = {
+    host: database.host,
+
+    port: database.port || 5432,
+
+    database: database.name,
+
+    user: database.user,
+
+    password: database.password,
+
+    ...(database.ssl
+      ? {
+          ssl: {
+            rejectUnauthorized: false,
+          },
+        }
+      : {}),
+
+    max: database.poolMax || 10,
+
+    idleTimeoutMillis:
+      database.idleTimeoutMillis || 30000,
+
+    connectionTimeoutMillis:
+      database.connectionTimeoutMillis || 15000,
+
+    keepAlive: true,
+  };
+}
 
 // =========================================================
 // CREATE POOL
@@ -92,42 +94,40 @@ const poolConfig = databaseUrl
 
 const pool = new Pool(poolConfig);
 
-const connectionSource = databaseUrl
-  ? isNeon
-    ? "Neon PostgreSQL using DATABASE_URL"
-    : "PostgreSQL using DATABASE_URL"
-  : "PostgreSQL using host configuration";
-
 // =========================================================
 // CONNECTION EVENTS
 // =========================================================
 
 pool.on("connect", () => {
-  console.log("[DATABASE] PostgreSQL client connected.");
+  console.log(
+    "[DATABASE] PostgreSQL client connected."
+  );
 });
 
 pool.on("error", (error) => {
   console.error(
-    "[DATABASE] Unexpected idle-client error:",
+    "[DATABASE] Unexpected database error:",
     error.message,
     error.code || ""
   );
 });
 
 // =========================================================
-// TEST ACTUAL CONNECTION
+// VERIFY CONNECTION
 // =========================================================
 
 pool
   .query("SELECT 1 AS connected")
   .then(() => {
     console.log(
-      `[DATABASE] Connection test successful: ${connectionSource}`
+      databaseUrl
+        ? "[DATABASE] Neon/DATABASE_URL connection successful."
+        : "[DATABASE] Host-based PostgreSQL connection successful."
     );
   })
   .catch((error) => {
     console.error(
-      `[DATABASE] Connection test failed: ${connectionSource}`,
+      "[DATABASE] Connection test failed:",
       error.message,
       error.code || ""
     );
