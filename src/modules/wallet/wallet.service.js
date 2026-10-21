@@ -1,3 +1,4 @@
+
 import db from "../../config/database.js";
 
 import {
@@ -8,100 +9,88 @@ import {
   updateWalletBalance,
 } from "./wallet.repository.js";
 
-
 import {
   recordFunding,
   recordPayment,
 } from "../transactions/transaction.service.js";
 
-
-
 /**
- * Generate wallet number
+ * Generate wallet number.
+ *
+ * wallet.repository.js returns wallet_number as a string,
+ * not as an object.
  */
 function generateWalletNumber(lastWallet) {
-
   if (!lastWallet) {
-
     return "3010000001";
-
   }
 
+  const previousWalletNumber =
+    typeof lastWallet === "object"
+      ? lastWallet.wallet_number
+      : lastWallet;
 
-  return (
-    parseInt(lastWallet.wallet_number, 10) + 1
-  ).toString();
+  const previousNumber = Number(
+    previousWalletNumber
+  );
 
+  if (
+    !Number.isSafeInteger(previousNumber) ||
+    previousNumber < 3010000001
+  ) {
+    throw new Error(
+      "The latest wallet number is invalid."
+    );
+  }
+
+  return String(previousNumber + 1);
 }
 
-
-
-
 /**
- * Create wallet for user
+ * Create wallet for user.
  */
 export async function createUserWallet(userId) {
+  if (!userId) {
+    throw new Error("User ID is required.");
+  }
 
   const existingWallet =
     await findWalletByUserId(userId);
 
-
   if (existingWallet) {
-
-    throw new Error(
-      "Wallet already exists"
-    );
-
+    throw new Error("Wallet already exists.");
   }
-
 
   const latestWallet =
     await getLatestWalletNumber();
 
-
   const walletNumber =
     generateWalletNumber(latestWallet);
 
-
-  return createWallet(
+  // IMPORTANT:
+  // createWallet expects one data object.
+  return createWallet({
     userId,
-    walletNumber
-  );
-
+    walletNumber,
+  });
 }
 
-
-
-
-
 /**
- * Get user wallet
+ * Get user wallet.
  */
 export async function getMyWallet(userId) {
-
   const wallet =
     await findWalletByUserId(userId);
 
-
   if (!wallet) {
-
-    throw new Error(
-      "Wallet not found"
-    );
-
+    throw new Error("Wallet not found.");
   }
 
-
   return wallet;
-
 }
 
-
-
-
-
 /**
- * Credit Wallet
+ * Credit wallet.
  *
  * Used for:
  * - Monnify funding
@@ -109,27 +98,16 @@ export async function getMyWallet(userId) {
  * - Bank transfer
  */
 export async function creditWallet({
-
   walletId,
   amount,
   reference,
   description,
   metadata = {},
-
 }) {
-
-
-  const client =
-    await db.connect();
-
+  const client = await db.connect();
 
   try {
-
-    await client.query(
-      "BEGIN"
-    );
-
-
+    await client.query("BEGIN");
 
     const wallet =
       await findWalletForUpdate(
@@ -137,34 +115,19 @@ export async function creditWallet({
         client
       );
 
-
-
     if (!wallet) {
-
-      throw new Error(
-        "Wallet not found"
-      );
-
+      throw new Error("Wallet not found.");
     }
 
-
-
     const balanceBefore =
-      Number(
-        wallet.available_balance
-      );
+      Number(wallet.available_balance);
 
-
-
-    const balanceAfter =
-      Number(
-        (
-          balanceBefore +
-          Number(amount)
-        ).toFixed(2)
-      );
-
-
+    const balanceAfter = Number(
+      (
+        balanceBefore +
+        Number(amount)
+      ).toFixed(2)
+    );
 
     const updatedWallet =
       await updateWalletBalance(
@@ -173,77 +136,36 @@ export async function creditWallet({
         client
       );
 
-
-
     const transaction =
       await recordFunding(
         {
-
           walletId,
-
           reference,
-
           amount,
-
           balanceBefore,
-
           balanceAfter,
-
           description,
-
           metadata,
-
         },
-
         client
       );
 
-
-
-    await client.query(
-      "COMMIT"
-    );
-
-
+    await client.query("COMMIT");
 
     return {
-
-      wallet:
-        updatedWallet,
-
+      wallet: updatedWallet,
       transaction,
-
     };
-
-
-  }
-  catch(error) {
-
-
-    await client.query(
-      "ROLLBACK"
-    );
-
-
+  } catch (error) {
+    await client.query("ROLLBACK");
     throw error;
-
-
-  }
-  finally {
-
-
+  } finally {
     client.release();
-
   }
-
 }
 
-
-
-
-
 /**
- * Debit Wallet
+ * Debit wallet.
  *
  * Used for:
  * - Airtime
@@ -253,29 +175,16 @@ export async function creditWallet({
  * - Bills
  */
 export async function debitWallet({
-
   walletId,
   amount,
   reference,
   description,
   metadata = {},
-
 }) {
-
-
-  const client =
-    await db.connect();
-
-
+  const client = await db.connect();
 
   try {
-
-
-    await client.query(
-      "BEGIN"
-    );
-
-
+    await client.query("BEGIN");
 
     const wallet =
       await findWalletForUpdate(
@@ -283,46 +192,23 @@ export async function debitWallet({
         client
       );
 
-
-
     if (!wallet) {
-
-      throw new Error(
-        "Wallet not found"
-      );
-
+      throw new Error("Wallet not found.");
     }
-
-
 
     const balanceBefore =
-      Number(
-        wallet.available_balance
-      );
+      Number(wallet.available_balance);
 
-
-
-    if (
-      balanceBefore < Number(amount)
-    ) {
-
-      throw new Error(
-        "Insufficient balance"
-      );
-
+    if (balanceBefore < Number(amount)) {
+      throw new Error("Insufficient balance.");
     }
 
-
-
-    const balanceAfter =
-      Number(
-        (
-          balanceBefore -
-          Number(amount)
-        ).toFixed(2)
-      );
-
-
+    const balanceAfter = Number(
+      (
+        balanceBefore -
+        Number(amount)
+      ).toFixed(2)
+    );
 
     const updatedWallet =
       await updateWalletBalance(
@@ -331,67 +217,30 @@ export async function debitWallet({
         client
       );
 
-
-
     const transaction =
       await recordPayment(
         {
-
           walletId,
-
           reference,
-
           amount,
-
           balanceBefore,
-
           balanceAfter,
-
           description,
-
           metadata,
-
         },
-
         client
       );
 
-
-
-    await client.query(
-      "COMMIT"
-    );
-
-
+    await client.query("COMMIT");
 
     return {
-
-      wallet:
-        updatedWallet,
-
+      wallet: updatedWallet,
       transaction,
-
     };
-
-
-  }
-  catch(error) {
-
-
-    await client.query(
-      "ROLLBACK"
-    );
-
-
+  } catch (error) {
+    await client.query("ROLLBACK");
     throw error;
-
-
-  }
-  finally {
-
-
+  } finally {
     client.release();
-
   }
-
 }
