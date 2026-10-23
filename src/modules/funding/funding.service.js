@@ -1,4 +1,4 @@
- // src/modules/funding/funding.service.js
+// src/modules/funding/funding.service.js
 
 import db from "../../config/database.js";
 
@@ -31,45 +31,35 @@ import {
 } from "../notification/notification.service.js";
 
 
-/**
- * =========================================================
- * CREATE USER RESERVED ACCOUNT
- * =========================================================
- */
-export async function createUserReservedAccount(user) {
+// =========================================================
+// CREATE USER RESERVED / DEDICATED ACCOUNT
+// =========================================================
 
+export async function createUserReservedAccount(user) {
+  // The authenticated user ID must come from the verified JWT.
   if (!user?.id) {
     throw new Error(
       "Authenticated user is required"
     );
   }
 
-  /**
-   * -------------------------------------------------------
-   * CHECK IF USER ALREADY HAS A RESERVED ACCOUNT
-   * -------------------------------------------------------
-   */
+  // -------------------------------------------------------
+  // 1. Return an existing reserved account if one exists
+  // -------------------------------------------------------
 
   const existing =
-    await findReservedAccountByUser(
-      user.id
-    );
+    await findReservedAccountByUser(user.id);
 
   if (existing) {
     return existing;
   }
 
-
-  /**
-   * -------------------------------------------------------
-   * FIND USER WALLET
-   * -------------------------------------------------------
-   */
+  // -------------------------------------------------------
+  // 2. Find the user's existing eVault wallet
+  // -------------------------------------------------------
 
   const wallet =
-    await findWalletByUserId(
-      user.id
-    );
+    await findWalletByUserId(user.id);
 
   if (!wallet) {
     throw new Error(
@@ -77,17 +67,71 @@ export async function createUserReservedAccount(user) {
     );
   }
 
+  // -------------------------------------------------------
+  // 3. Retrieve the user's registered details from the DB
+  //
+  // req.user comes from JWT claims and may not contain
+  // full_name or email. Retrieve them using the verified
+  // authenticated user's ID.
+  // -------------------------------------------------------
 
-  /**
-   * -------------------------------------------------------
-   * CREATE MONNIFY RESERVED ACCOUNT
-   * -------------------------------------------------------
-   */
+  const userResult = await db.query(
+    `
+      SELECT
+        id,
+        full_name,
+        email
+      FROM users
+      WHERE id = $1
+      LIMIT 1
+    `,
+    [user.id]
+  );
+
+  const registeredUser =
+    userResult.rows[0];
+
+  if (!registeredUser) {
+    throw new Error(
+      "Registered user record not found."
+    );
+  }
+
+  const fullName =
+    String(registeredUser.full_name || "").trim();
+
+  const email =
+    String(registeredUser.email || "").trim();
+
+  if (!fullName) {
+    throw new Error(
+      "Your registered full name is missing. Please contact support."
+    );
+  }
+
+  if (!email) {
+    throw new Error(
+      "Your registered email is missing. Please contact support."
+    );
+  }
+
+  // Use registered details for Monnify.
+  // Do not accept the customer's name from an arbitrary
+  // frontend request body.
+  const accountUser = {
+    ...user,
+    ...registeredUser,
+    full_name: fullName,
+    fullName,
+    email,
+  };
+
+  // -------------------------------------------------------
+  // 4. Create the Monnify reserved account
+  // -------------------------------------------------------
 
   const account =
-    await createReservedAccount(
-      user
-    );
+    await createReservedAccount(accountUser);
 
   if (!account) {
     throw new Error(
@@ -95,12 +139,9 @@ export async function createUserReservedAccount(user) {
     );
   }
 
-
-  /**
-   * -------------------------------------------------------
-   * EXTRACT ACCOUNT
-   * -------------------------------------------------------
-   */
+  // -------------------------------------------------------
+  // 5. Extract and validate the account details
+  // -------------------------------------------------------
 
   const accounts =
     account.accounts || [];
@@ -114,15 +155,11 @@ export async function createUserReservedAccount(user) {
     );
   }
 
-
-  /**
-   * -------------------------------------------------------
-   * SAVE RESERVED ACCOUNT
-   * -------------------------------------------------------
-   */
+  // -------------------------------------------------------
+  // 6. Save the reserved account
+  // -------------------------------------------------------
 
   return await saveReservedAccount({
-
     userId:
       user.id,
 
@@ -135,7 +172,7 @@ export async function createUserReservedAccount(user) {
     accountName:
       firstAccount.accountName ||
       account.accountName ||
-      user.full_name,
+      accountUser.full_name,
 
     bankName:
       firstAccount.bankName ||
@@ -150,97 +187,36 @@ export async function createUserReservedAccount(user) {
       account.reservationReference ||
       account.contractCode ||
       null,
-
   });
 }
 
 
-/**
- * =========================================================
- * GET USER RESERVED ACCOUNT
- * =========================================================
- */
-export async function getUserReservedAccount(
-  userId
-) {
+// =========================================================
+// GET USER RESERVED ACCOUNT
+// =========================================================
 
+export async function getUserReservedAccount(userId) {
   if (!userId) {
     throw new Error(
       "User ID is required"
     );
   }
 
-  return await findReservedAccountByUser(
-    userId
-  );
+  return await findReservedAccountByUser(userId);
 }
 
 
-/**
- * =========================================================
- * PROCESS MONNIFY FUNDING
- * =========================================================
- *
- * Flow:
- *
- * Monnify webhook
- *      ↓
- * Extract transaction reference
- *      ↓
- * Extract destination account
- *      ↓
- * Find Evault reserved account
- *      ↓
- * Verify transaction with Monnify
- *      ↓
- * Confirm PAID
- *      ↓
- * Start DB transaction
- *      ↓
- * Check duplicate transaction
- *      ↓
- * Lock wallet
- *      ↓
- * Read available balance
- *      ↓
- * Credit wallet
- *      ↓
- * Record transaction
- *      ↓
- * Commit
- *      ↓
- * Notification
- *
- * IMPORTANT:
- *
- * Wallet columns are:
- *
- * available_balance
- * ledger_balance
- *
- * NOT:
- *
- * balance
- */
-export async function processFunding(
-  webhookData
-) {
+// =========================================================
+// PROCESS MONNIFY FUNDING WEBHOOK
+// =========================================================
 
-  /**
-   * =======================================================
-   * EXTRACT WEBHOOK DATA
-   * =======================================================
-   */
+export async function processFunding(webhookData) {
+  // -------------------------------------------------------
+  // 1. Extract webhook data
+  // -------------------------------------------------------
 
   const eventData =
     webhookData?.eventData || {};
-
-
-  /**
-   * -------------------------------------------------------
-   * TRANSACTION REFERENCE
-   * -------------------------------------------------------
-   */
 
   const transactionReference =
     eventData.transactionReference ||
@@ -248,27 +224,11 @@ export async function processFunding(
     webhookData?.transactionReference ||
     webhookData?.paymentReference;
 
-
-  /**
-   * -------------------------------------------------------
-   * DESTINATION ACCOUNT NUMBER
-   * -------------------------------------------------------
-   */
-
   const accountNumber =
-    eventData
-      ?.destinationAccountInformation
-      ?.accountNumber ||
-
-    eventData
-      ?.destinationAccountNumber ||
-
-    webhookData
-      ?.destinationAccountNumber ||
-
-    webhookData
-      ?.accountNumber;
-
+    eventData?.destinationAccountInformation?.accountNumber ||
+    eventData?.destinationAccountNumber ||
+    webhookData?.destinationAccountNumber ||
+    webhookData?.accountNumber;
 
   console.log(
     "MONNIFY FUNDING DETAILS:",
@@ -278,265 +238,159 @@ export async function processFunding(
     }
   );
 
-
-  /**
-   * =======================================================
-   * VALIDATE REQUIRED DATA
-   * =======================================================
-   */
+  // -------------------------------------------------------
+  // 2. Validate required data
+  // -------------------------------------------------------
 
   if (!transactionReference) {
-
     throw new Error(
       "Funding transaction reference is missing"
     );
-
   }
 
-
   if (!accountNumber) {
-
     throw new Error(
       "Destination account number is missing"
     );
-
   }
 
-
-  /**
-   * =======================================================
-   * FIND RESERVED ACCOUNT
-   * =======================================================
-   */
+  // -------------------------------------------------------
+  // 3. Find the eVault reserved account
+  // -------------------------------------------------------
 
   console.log(
     "LOOKING FOR RESERVED ACCOUNT:",
     accountNumber
   );
 
-
   const reservedAccount =
-    await findReservedAccountByNumber(
-      accountNumber
-    );
-
+    await findReservedAccountByNumber(accountNumber);
 
   if (!reservedAccount) {
-
     throw new Error(
       `Reserved account not found for account number ${accountNumber}`
     );
-
   }
-
 
   console.log(
     "RESERVED ACCOUNT FOUND:",
     {
-      id:
-        reservedAccount.id,
-
-      userId:
-        reservedAccount.user_id,
-
-      walletId:
-        reservedAccount.wallet_id,
-
-      accountNumber:
-        reservedAccount.account_number,
+      id: reservedAccount.id,
+      userId: reservedAccount.user_id,
+      walletId: reservedAccount.wallet_id,
+      accountNumber: reservedAccount.account_number,
     }
   );
 
-
-  /**
-   * =======================================================
-   * VERIFY TRANSACTION WITH MONNIFY
-   * =======================================================
-   *
-   * This is important.
-   *
-   * We don't trust amount/payment status supplied only
-   * by the webhook.
-   *
-   * We ask Monnify for the actual transaction.
-   */
+  // -------------------------------------------------------
+  // 4. Verify the transaction directly with Monnify
+  // -------------------------------------------------------
 
   console.log(
     "VERIFYING MONNIFY TRANSACTION:",
     transactionReference
   );
 
-
   let verified;
 
   try {
-
     verified =
-      await verifyTransaction(
-        transactionReference
-      );
-
+      await verifyTransaction(transactionReference);
   } catch (error) {
-
     console.error(
       "MONNIFY TRANSACTION VERIFICATION FAILED:",
       error.response?.data ||
-      error.message
+        error.message
     );
 
     throw new Error(
       "Unable to verify Monnify transaction"
     );
-
   }
-
 
   console.log(
     "MONNIFY VERIFICATION RESULT:",
-    JSON.stringify(
-      verified,
-      null,
-      2
-    )
+    JSON.stringify(verified, null, 2)
   );
 
+  // -------------------------------------------------------
+  // 5. Verify payment status
+  // -------------------------------------------------------
 
-  /**
-   * =======================================================
-   * VERIFY PAYMENT STATUS
-   * =======================================================
-   */
-
-  if (
-    verified?.paymentStatus !==
-    "PAID"
-  ) {
-
+  if (verified?.paymentStatus !== "PAID") {
     throw new Error(
-      `Payment is not completed. Status: ${verified?.paymentStatus || "UNKNOWN"}`
+      `Payment is not completed. Status: ${
+        verified?.paymentStatus || "UNKNOWN"
+      }`
     );
-
   }
 
-
-  /**
-   * =======================================================
-   * GET PAYMENT AMOUNT
-   * =======================================================
-   *
-   * Prefer Monnify's verified amount.
-   */
+  // -------------------------------------------------------
+  // 6. Validate the verified amount
+  // -------------------------------------------------------
 
   const amount =
-    Number(
-      verified?.amountPaid
-    );
+    Number(verified?.amountPaid);
 
-
-  if (
-    !Number.isFinite(amount) ||
-    amount <= 0
-  ) {
-
+  if (!Number.isFinite(amount) || amount <= 0) {
     throw new Error(
       "Invalid funding amount"
     );
-
   }
-
 
   console.log(
     "VERIFIED FUNDING AMOUNT:",
     amount
   );
 
-
-  /**
-   * =======================================================
-   * START DATABASE TRANSACTION
-   * =======================================================
-   */
+  // -------------------------------------------------------
+  // 7. Start the database transaction
+  // -------------------------------------------------------
 
   const client =
     await db.connect();
 
-
   try {
+    await client.query("BEGIN");
 
-    await client.query(
-      "BEGIN"
-    );
-
-
-    /**
-     * =====================================================
-     * IDEMPOTENCY CHECK
-     * =====================================================
-     *
-     * Monnify can retry a webhook.
-     *
-     * We MUST NOT credit the wallet twice.
-     */
+    // -----------------------------------------------------
+    // 8. Prevent duplicate funding
+    // -----------------------------------------------------
 
     const existing =
       await client.query(
         `
-        SELECT *
-        FROM transactions
-        WHERE reference = $1
-        LIMIT 1
+          SELECT *
+          FROM transactions
+          WHERE reference = $1
+          LIMIT 1
         `,
-        [
-          transactionReference,
-        ]
+        [transactionReference]
       );
 
-
-    if (
-      existing.rows.length > 0
-    ) {
-
+    if (existing.rows.length > 0) {
       console.log(
         "DUPLICATE MONNIFY TRANSACTION:",
         transactionReference
       );
 
-
-      await client.query(
-        "ROLLBACK"
-      );
-
+      await client.query("ROLLBACK");
 
       return {
-
-        success:
-          true,
-
-        duplicate:
-          true,
-
-        transaction:
-          existing.rows[0],
-
+        success: true,
+        duplicate: true,
+        transaction: existing.rows[0],
       };
-
     }
 
-
-    /**
-     * =====================================================
-     * LOCK WALLET
-     * =====================================================
-     *
-     * FOR UPDATE prevents simultaneous funding/debit
-     * operations from corrupting the balance.
-     */
+    // -----------------------------------------------------
+    // 9. Lock the wallet before updating its balance
+    // -----------------------------------------------------
 
     console.log(
       "LOCKING WALLET:",
       reservedAccount.wallet_id
     );
-
 
     const wallet =
       await findWalletForUpdate(
@@ -544,76 +398,43 @@ export async function processFunding(
         client
       );
 
-
     if (!wallet) {
-
       throw new Error(
         "Wallet not found"
       );
-
     }
 
-
-    /**
-     * =====================================================
-     * READ BALANCE BEFORE
-     * =====================================================
-     */
+    // -----------------------------------------------------
+    // 10. Record balances before funding
+    // -----------------------------------------------------
 
     const balanceBefore =
-      Number(
-        wallet.available_balance || 0
-      );
-
+      Number(wallet.available_balance || 0);
 
     const ledgerBalanceBefore =
-      Number(
-        wallet.ledger_balance || 0
-      );
-
+      Number(wallet.ledger_balance || 0);
 
     console.log(
       "WALLET BEFORE FUNDING:",
       {
-        walletId:
-          wallet.id,
-
-        availableBalance:
-          balanceBefore,
-
-        ledgerBalance:
-          ledgerBalanceBefore,
-
-        fundingAmount:
-          amount,
+        walletId: wallet.id,
+        availableBalance: balanceBefore,
+        ledgerBalance: ledgerBalanceBefore,
+        fundingAmount: amount,
       }
     );
 
-
-    /**
-     * =====================================================
-     * CREDIT WALLET
-     * =====================================================
-     *
-     * creditWallet() updates:
-     *
-     * available_balance
-     *
-     * and
-     *
-     * ledger_balance
-     */
+    // -----------------------------------------------------
+    // 11. Credit the wallet
+    // -----------------------------------------------------
 
     console.log(
       "CREDITING WALLET:",
       {
-        walletId:
-          wallet.id,
-
+        walletId: wallet.id,
         amount,
       }
     );
-
 
     const updatedWallet =
       await creditWallet(
@@ -622,67 +443,44 @@ export async function processFunding(
         client
       );
 
-
     if (!updatedWallet) {
-
       throw new Error(
         "Failed to credit wallet"
       );
-
     }
 
-
-    /**
-     * =====================================================
-     * BALANCE AFTER
-     * =====================================================
-     */
+    // -----------------------------------------------------
+    // 12. Record balances after funding
+    // -----------------------------------------------------
 
     const balanceAfter =
-      Number(
-        updatedWallet.available_balance || 0
-      );
-
+      Number(updatedWallet.available_balance || 0);
 
     const ledgerBalanceAfter =
-      Number(
-        updatedWallet.ledger_balance || 0
-      );
-
+      Number(updatedWallet.ledger_balance || 0);
 
     console.log(
       "WALLET AFTER FUNDING:",
       {
-        walletId:
-          updatedWallet.id,
-
-        availableBalance:
-          balanceAfter,
-
-        ledgerBalance:
-          ledgerBalanceAfter,
+        walletId: updatedWallet.id,
+        availableBalance: balanceAfter,
+        ledgerBalance: ledgerBalanceAfter,
       }
     );
 
-
-    /**
-     * =====================================================
-     * RECORD TRANSACTION
-     * =====================================================
-     */
+    // -----------------------------------------------------
+    // 13. Record the transaction
+    // -----------------------------------------------------
 
     console.log(
       "RECORDING FUNDING TRANSACTION:",
       transactionReference
     );
 
-
     const transaction =
       await recordFunding(
         {
-
-          walletId:
-            wallet.id,
+          walletId: wallet.id,
 
           reference:
             transactionReference,
@@ -697,9 +495,7 @@ export async function processFunding(
             "Wallet funding via Monnify",
 
           metadata: {
-
-            source:
-              "MONNIFY",
+            source: "MONNIFY",
 
             transactionReference,
 
@@ -709,8 +505,7 @@ export async function processFunding(
 
             accountNumber,
 
-            amountPaid:
-              amount,
+            amountPaid: amount,
 
             paymentStatus:
               verified.paymentStatus,
@@ -725,161 +520,91 @@ export async function processFunding(
               eventData.currency ||
               "NGN",
 
-            webhook:
-              webhookData,
-
+            webhook: webhookData,
           },
-
         },
         client
       );
 
+    // -----------------------------------------------------
+    // 14. Commit the wallet credit and transaction
+    // -----------------------------------------------------
 
-    /**
-     * =====================================================
-     * COMMIT DATABASE TRANSACTION
-     * =====================================================
-     */
-
-    await client.query(
-      "COMMIT"
-    );
-
+    await client.query("COMMIT");
 
     console.log(
       "FUNDING COMMITTED SUCCESSFULLY:",
       {
         transactionReference,
-
-        walletId:
-          wallet.id,
-
+        walletId: wallet.id,
         amount,
-
         balanceAfter,
       }
     );
 
-
-    /**
-     * =====================================================
-     * SEND NOTIFICATION
-     * =====================================================
-     *
-     * Notification failure must NOT undo a successful
-     * wallet credit.
-     */
+    // -----------------------------------------------------
+    // 15. Send notification
+    //
+    // Notification failure must not undo a committed
+    // wallet credit.
+    // -----------------------------------------------------
 
     try {
-
       await notifyWalletFunding({
-
-        userId:
-          reservedAccount.user_id,
-
+        userId: reservedAccount.user_id,
         amount,
-
-        balance:
-          balanceAfter,
-
-        reference:
-          transactionReference,
-
+        balance: balanceAfter,
+        reference: transactionReference,
       });
-
 
       console.log(
         "FUNDING NOTIFICATION SENT:",
         transactionReference
       );
-
-
-    } catch (
-      notificationError
-    ) {
-
+    } catch (notificationError) {
       console.error(
         "Funding notification failed:",
         notificationError.message
       );
-
     }
 
-
-    /**
-     * =====================================================
-     * RETURN RESULT
-     * =====================================================
-     */
+    // -----------------------------------------------------
+    // 16. Return the result
+    // -----------------------------------------------------
 
     return {
-
-      success:
-        true,
+      success: true,
 
       transaction,
 
       wallet: {
-
-        id:
-          updatedWallet.id,
-
-        availableBalance:
-          balanceAfter,
-
-        ledgerBalance:
-          ledgerBalanceAfter,
-
+        id: updatedWallet.id,
+        availableBalance: balanceAfter,
+        ledgerBalance: ledgerBalanceAfter,
       },
-
     };
-
-
   } catch (error) {
-
-    /**
-     * =====================================================
-     * ROLLBACK
-     * =====================================================
-     */
+    // -----------------------------------------------------
+    // Roll back unsuccessful database transactions
+    // -----------------------------------------------------
 
     try {
-
-      await client.query(
-        "ROLLBACK"
-      );
-
-    } catch (
-      rollbackError
-    ) {
-
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
       console.error(
         "Funding rollback error:",
         rollbackError.message
       );
-
     }
-
 
     console.error(
       "PROCESS FUNDING ERROR:",
       error.message
     );
 
-
     throw error;
-
-
   } finally {
-
-    /**
-     * =====================================================
-     * RELEASE DATABASE CONNECTION
-     * =====================================================
-     */
-
+    // Always release the pooled connection.
     client.release();
-
   }
-
 }
