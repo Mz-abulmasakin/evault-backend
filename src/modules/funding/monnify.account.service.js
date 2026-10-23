@@ -1,5 +1,4 @@
-
- // src/modules/funding/monnify.account.service.js
+// src/modules/funding/monnify.account.service.js
 
 import axios from "axios";
 
@@ -15,16 +14,15 @@ import {
 // =========================================================
 
 export async function createReservedAccount(user) {
-  // 1. Validate the authenticated user.
   if (!user?.id) {
     throw new Error(
       "Authenticated user ID is missing"
     );
   }
 
-  // 2. Fetch the customer's registered details.
-  // JWT claims may not contain the customer's full name
-  // or email, so retrieve the database record directly.
+  // -------------------------------------------------------
+  // 1. FETCH REGISTERED USER DETAILS
+  // -------------------------------------------------------
 
   const userResult = await db.query(
     `
@@ -47,8 +45,6 @@ export async function createReservedAccount(user) {
     );
   }
 
-  // Prefer the registered database values.
-  // Retain JWT fallbacks for compatibility with existing callers.
   const fullName = String(
     registeredUser.full_name ||
     user.full_name ||
@@ -64,17 +60,61 @@ export async function createReservedAccount(user) {
 
   if (!fullName) {
     throw new Error(
-      "Registered full name is missing. Please check the user's database record."
+      "Registered full name is missing"
     );
   }
 
   if (!email) {
     throw new Error(
-      "Registered email is missing. Please check the user's database record."
+      "Registered email is missing"
     );
   }
 
-  // 3. Validate Monnify configuration.
+  // -------------------------------------------------------
+  // 2. FETCH SAVED BVN / NIN
+  // -------------------------------------------------------
+
+  const identityResult = await db.query(
+    `
+      SELECT
+        bvn,
+        nin
+      FROM identity_verifications
+      WHERE user_id = $1
+      LIMIT 1
+    `,
+    [registeredUser.id]
+  );
+
+  const identity = identityResult.rows[0] || {};
+
+  const savedBvn = String(
+    identity.bvn || ""
+  ).trim();
+
+  const savedNin = String(
+    identity.nin || ""
+  ).trim();
+
+  // Accept either identity number independently.
+  const bvn = /^\d{11}$/.test(savedBvn)
+    ? savedBvn
+    : "";
+
+  const nin = /^\d{11}$/.test(savedNin)
+    ? savedNin
+    : "";
+
+  if (!bvn && !nin) {
+    throw new Error(
+      "BVN or NIN is required. Save a valid 11-digit NIN or BVN in your eVault identity profile before generating your dedicated account."
+    );
+  }
+
+  // -------------------------------------------------------
+  // 3. VALIDATE MONNIFY CONFIGURATION
+  // -------------------------------------------------------
+
   const monnify = env.integrations?.monnify;
 
   const baseUrl = String(
@@ -93,56 +133,83 @@ export async function createReservedAccount(user) {
     );
   }
 
-  // 4. Obtain the Monnify access token.
+  // -------------------------------------------------------
+  // 4. OBTAIN ACCESS TOKEN
+  // -------------------------------------------------------
+
   const token = await getAccessToken();
 
-  // 5. Build the reserved-account endpoint.
   const endpoint =
     `${baseUrl}/api/v2/bank-transfer/reserved-accounts`;
 
   const accountReference =
     `EVAULT-${registeredUser.id}`;
 
+  // -------------------------------------------------------
+  // 5. BUILD MONNIFY REQUEST
+  // -------------------------------------------------------
+
+  const payload = {
+    accountReference,
+
+    accountName: fullName,
+
+    currencyCode: "NGN",
+
+    contractCode: monnify.contractCode,
+
+    customerEmail: email,
+
+    customerName: fullName,
+
+    getAllAvailableBanks: false,
+
+    preferredBanks: ["035"],
+  };
+
+  // Include available identity fields.
+  // NIN alone is sufficient; BVN is not mandatory
+  // when a valid NIN is supplied.
+
+  if (bvn) {
+    payload.bvn = bvn;
+  }
+
+  if (nin) {
+    payload.nin = nin;
+  }
+
   console.log(
     "Creating Monnify Reserved Account:",
     {
       userId: registeredUser.id,
       accountReference,
-      hasFullName: Boolean(fullName),
-      hasEmail: Boolean(email),
+      hasBvn: Boolean(bvn),
+      hasNin: Boolean(nin),
     }
   );
 
-  // 6. Request the dedicated account from Monnify.
+  // -------------------------------------------------------
+  // 6. CREATE RESERVED ACCOUNT
+  // -------------------------------------------------------
+
   const response = await axios.post(
     endpoint,
-    {
-      accountReference,
-
-      accountName: fullName,
-
-      currencyCode: "NGN",
-
-      contractCode: monnify.contractCode,
-
-      customerEmail: email,
-
-      customerName: fullName,
-
-      getAllAvailableBanks: false,
-
-      preferredBanks: ["035"],
-    },
+    payload,
     {
       headers: {
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
       },
+
       timeout: 30000,
     }
   );
 
-  // 7. Validate Monnify's response.
+  // -------------------------------------------------------
+  // 7. VALIDATE RESPONSE
+  // -------------------------------------------------------
+
   if (!response.data?.requestSuccessful) {
     throw new Error(
       response.data?.responseMessage ||
@@ -150,7 +217,8 @@ export async function createReservedAccount(user) {
     );
   }
 
-  const account = response.data?.responseBody;
+  const account =
+    response.data?.responseBody;
 
   if (!account) {
     throw new Error(
