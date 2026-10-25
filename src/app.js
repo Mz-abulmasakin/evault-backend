@@ -7,6 +7,10 @@
 
 import express from "express";
 
+import {
+  securityMiddleware,
+} from "./middleware/security.middleware.js";
+
 // =========================================================
 // EXISTING ROUTES
 // =========================================================
@@ -47,48 +51,57 @@ import instantIPEWebhookRoutes
 import bvnRoutes
   from "./modules/identity/bvn.routes.js";
 
-  import educationRoutes from "./modules/education/education.routes.js";
-
-// =========================================================
-// ADMIN
-// =========================================================
+import educationRoutes
+  from "./modules/education/education.routes.js";
 
 import adminRoutes
   from "./modules/admin/admin.routes.js";
 
-  import cableRoutes from "./modules/cable/cable.routes.js";
-
-
-const app =
-  express();
+import cableRoutes
+  from "./modules/cable/cable.routes.js";
 
 
 // =========================================================
-// GLOBAL MIDDLEWARE
+// CREATE EXPRESS APPLICATION
 // =========================================================
-//
-// We preserve the original raw request body because
-// payment-provider webhook signature verification may
-// require the exact body sent by the provider.
+
+const app = express();
+
+
+// =========================================================
+// SECURITY, CORS AND HTTP REQUEST LOGGING
+// =========================================================
 //
 // IMPORTANT:
-// This is kept at the top so req.rawBody is available
-// to routes that require it.
+// Activate the security middleware before the routes.
+//
+// This enables CORS for browser-based clients such as
+// Expo Web running locally and the deployed Vercel site.
+//
+// It also enables Helmet security headers and Morgan
+// HTTP request logging through the existing middleware.
+//
+// =========================================================
+
+securityMiddleware(app);
+
+
+// =========================================================
+// GLOBAL JSON MIDDLEWARE
+// =========================================================
+//
+// Preserve the original raw request body because
+// payment-provider webhook signature verification may
+// require the exact request bytes.
+//
+// Keep this verify callback in place.
 // =========================================================
 
 app.use(
   express.json({
-    verify: (
-      req,
-      res,
-      buffer
-    ) => {
-
-      req.rawBody =
-        Buffer.from(buffer);
-
+    verify: (req, res, buffer) => {
+      req.rawBody = Buffer.from(buffer);
     },
-
   })
 );
 
@@ -105,14 +118,6 @@ app.use(
 
 // =========================================================
 // ADMIN
-// =========================================================
-//
-// Admin authentication is completely separate from
-// customer authentication.
-//
-// POST /api/v1/admin/auth/login
-// GET  /api/v1/admin/auth/me
-//
 // =========================================================
 
 app.use(
@@ -184,17 +189,6 @@ app.use(
 // =========================================================
 // IDENTITY
 // =========================================================
-//
-// General identity routes:
-//
-// /api/v1/identity/kyc
-// /api/v1/identity/me
-// /api/v1/identity/status
-//
-// NIN and IPE routes are also mounted inside
-// identity.routes.js.
-//
-// =========================================================
 
 app.use(
   "/api/v1/identity",
@@ -206,21 +200,7 @@ app.use(
 // BVN
 // =========================================================
 //
-// BVN has its own router.
-//
-// IMPORTANT:
-// This mount was missing previously.
-//
-// The BVN router contains:
-//
-// GET  /service
-// POST /
-// GET  /history
-// GET  /:id/download
-// GET  /:id
-//
-// Therefore the final endpoints are:
-//
+// Existing BVN routes:
 // GET  /api/v1/identity/bvn/service
 // POST /api/v1/identity/bvn
 // GET  /api/v1/identity/bvn/history
@@ -259,12 +239,7 @@ app.use(
 // INSTANTIPE WEBHOOK
 // =========================================================
 //
-// IMPORTANT:
-// Keep this route before the 404 handler.
-//
-// The raw body has already been captured by the
-// express.json verify function above.
-//
+// Keep the existing webhook route and raw-body capture.
 // =========================================================
 
 app.use(
@@ -273,68 +248,48 @@ app.use(
 );
 
 
+// =========================================================
+// CABLE TV
+// =========================================================
+
 app.use(
   "/api/v1/cable",
   cableRoutes
 );
+
+
+// =========================================================
+// EDUCATION
+// =========================================================
 
 app.use(
   "/api/v1/education",
   educationRoutes
 );
 
+
 // =========================================================
 // HEALTH CHECK
 // =========================================================
 
-app.get(
-  "/",
-  (
-    req,
-    res
-  ) => {
-
-    res.json({
-
-      status:
-        "success",
-
-      message:
-        "Evault Corporate Backend is running",
-
-    });
-
-  }
-);
+app.get("/", (req, res) => {
+  res.json({
+    status: "success",
+    message: "Evault Corporate Backend is running",
+  });
+});
 
 
 // =========================================================
 // 404 HANDLER
 // =========================================================
-//
-// This MUST remain at the very end of the route stack.
-// =========================================================
 
-app.use(
-  (
-    req,
-    res
-  ) => {
-
-    res.status(
-      404
-    ).json({
-
-      success:
-        false,
-
-      message:
-        "Route not found",
-
-    });
-
-  }
-);
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    message: "Route not found",
+  });
+});
 
 
 // =========================================================
