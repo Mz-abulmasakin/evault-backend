@@ -1,6 +1,11 @@
-// src/modules/admin/admin.management.repository.js
 
 import db from "../../config/database.js";
+
+/**
+ * =========================================================
+ * ADMIN MANAGEMENT REPOSITORY
+ * =========================================================
+ */
 
 const USER_SELECT = `
   SELECT
@@ -10,15 +15,19 @@ const USER_SELECT = `
     u.email,
     u.phone_number,
     u.status,
-    u.email_verified,
+
+    u.is_email_verified AS email_verified,
+
     u.phone_verified,
     u.created_at,
+
     w.id AS wallet_id,
     w.wallet_number,
     w.available_balance,
     w.ledger_balance,
     w.currency,
     w.status AS wallet_status
+
   FROM users u
   LEFT JOIN wallets w ON w.user_id = u.id
 `;
@@ -30,6 +39,7 @@ function buildUserFilters({ search, status }) {
   if (search) {
     values.push(`%${search}%`);
     const p = `$${values.length}`;
+
     clauses.push(`(
       u.id::text ILIKE ${p}
       OR COALESCE(u.username, '') ILIKE ${p}
@@ -44,11 +54,26 @@ function buildUserFilters({ search, status }) {
     clauses.push(`u.status = $${values.length}`);
   }
 
-  return { whereSql: clauses.join(" AND "), values };
+  return {
+    whereSql: clauses.join(" AND "),
+    values,
+  };
 }
 
-export async function listAdminUsers({ page, limit, search, status }) {
-  const { whereSql, values } = buildUserFilters({ search, status });
+/**
+ * LIST ADMIN USERS
+ */
+export async function listAdminUsers({
+  page,
+  limit,
+  search,
+  status,
+}) {
+  const { whereSql, values } = buildUserFilters({
+    search,
+    status,
+  });
+
   const limitIndex = values.length + 1;
   const offsetIndex = values.length + 2;
   const offset = (page - 1) * limit;
@@ -61,8 +86,11 @@ export async function listAdminUsers({ page, limit, search, status }) {
        LIMIT $${limitIndex} OFFSET $${offsetIndex}`,
       [...values, limit, offset]
     ),
+
     db.query(
-      `SELECT COUNT(*)::int AS total FROM users u WHERE ${whereSql}`,
+      `SELECT COUNT(*)::int AS total
+       FROM users u
+       WHERE ${whereSql}`,
       values
     ),
   ]);
@@ -73,6 +101,9 @@ export async function listAdminUsers({ page, limit, search, status }) {
   };
 }
 
+/**
+ * FIND ADMIN USER
+ */
 export async function findAdminUserById(userId) {
   const result = await db.query(
     `${USER_SELECT}
@@ -83,9 +114,11 @@ export async function findAdminUserById(userId) {
   );
 
   const user = result.rows[0];
+
   if (!user) return null;
 
   let recentTransactions = [];
+
   if (user.wallet_id) {
     const transactionsResult = await db.query(
       `SELECT
@@ -105,13 +138,23 @@ export async function findAdminUserById(userId) {
        LIMIT 20`,
       [user.wallet_id]
     );
+
     recentTransactions = transactionsResult.rows;
   }
 
-  return { ...user, recent_transactions: recentTransactions };
+  return {
+    ...user,
+    recent_transactions: recentTransactions,
+  };
 }
 
-export async function emailAlreadyUsedByAnotherUser(email, userId) {
+/**
+ * CHECK EMAIL USAGE
+ */
+export async function emailAlreadyUsedByAnotherUser(
+  email,
+  userId
+) {
   const result = await db.query(
     `SELECT id
      FROM users
@@ -125,6 +168,9 @@ export async function emailAlreadyUsedByAnotherUser(email, userId) {
   return result.rows.length > 0;
 }
 
+/**
+ * UPDATE ADMIN USER
+ */
 export async function updateAdminUser(userId, fields) {
   const allowedColumns = {
     fullName: "full_name",
@@ -136,15 +182,20 @@ export async function updateAdminUser(userId, fields) {
   const values = [];
 
   for (const [key, column] of Object.entries(allowedColumns)) {
-    if (Object.prototype.hasOwnProperty.call(fields, key)) {
+    if (
+      Object.prototype.hasOwnProperty.call(fields, key)
+    ) {
       values.push(fields[key]);
       assignments.push(`${column} = $${values.length}`);
     }
   }
 
-  if (assignments.length === 0) return findAdminUserById(userId);
+  if (assignments.length === 0) {
+    return findAdminUserById(userId);
+  }
 
   values.push(String(userId));
+
   const idParameter = `$${values.length}`;
 
   const result = await db.query(
@@ -159,7 +210,9 @@ export async function updateAdminUser(userId, fields) {
        email,
        phone_number,
        status,
-       email_verified,
+
+       is_email_verified AS email_verified,
+
        phone_verified,
        created_at`,
     values
@@ -168,13 +221,23 @@ export async function updateAdminUser(userId, fields) {
   return result.rows[0] || null;
 }
 
-function buildTransactionFilters({ search, status, type, dateFrom, dateTo }) {
+/**
+ * TRANSACTION FILTERS
+ */
+function buildTransactionFilters({
+  search,
+  status,
+  type,
+  dateFrom,
+  dateTo,
+}) {
   const clauses = [];
   const values = [];
 
   if (search) {
     values.push(`%${search}%`);
     const p = `$${values.length}`;
+
     clauses.push(`(
       t.id::text ILIKE ${p}
       OR COALESCE(t.reference, '') ILIKE ${p}
@@ -199,16 +262,22 @@ function buildTransactionFilters({ search, status, type, dateFrom, dateTo }) {
 
   if (dateFrom) {
     values.push(dateFrom);
-    clauses.push(`t.created_at >= $${values.length}::date`);
+    clauses.push(
+      `t.created_at >= $${values.length}::date`
+    );
   }
 
   if (dateTo) {
     values.push(dateTo);
-    clauses.push(`t.created_at < ($${values.length}::date + INTERVAL '1 day')`);
+    clauses.push(
+      `t.created_at < ($${values.length}::date + INTERVAL '1 day')`
+    );
   }
 
   return {
-    whereSql: clauses.length ? `WHERE ${clauses.join(" AND ")}` : "",
+    whereSql: clauses.length
+      ? `WHERE ${clauses.join(" AND ")}`
+      : "",
     values,
   };
 }
@@ -227,18 +296,25 @@ const ADMIN_TRANSACTION_SELECT = `
     t.metadata,
     t.created_at,
     t.updated_at,
+
     u.id AS user_id,
     u.username,
     u.full_name,
     u.email,
     u.phone_number,
+
     w.wallet_number,
     w.currency
+
   FROM transactions t
+
   LEFT JOIN wallets w ON w.id = t.wallet_id
   LEFT JOIN users u ON u.id = w.user_id
 `;
 
+/**
+ * LIST ADMIN TRANSACTIONS
+ */
 export async function listAdminTransactions({
   page,
   limit,
@@ -268,6 +344,7 @@ export async function listAdminTransactions({
        LIMIT $${limitIndex} OFFSET $${offsetIndex}`,
       [...values, limit, offset]
     ),
+
     db.query(
       `SELECT COUNT(*)::int AS total
        FROM transactions t
@@ -284,6 +361,9 @@ export async function listAdminTransactions({
   };
 }
 
+/**
+ * FIND ADMIN TRANSACTION
+ */
 export async function findAdminTransaction(identifier) {
   const result = await db.query(
     `${ADMIN_TRANSACTION_SELECT}

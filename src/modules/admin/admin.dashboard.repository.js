@@ -1,21 +1,17 @@
+
 import db from "../../config/database.js";
 
 /**
  * =========================================================
  * ADMIN DASHBOARD REPOSITORY
  * =========================================================
- *
- * Read-only queries used by the admin dashboard.
- *
- * IMPORTANT:
- * This repository does not modify customer data.
+ * Read-only dashboard queries.
+ * Uses the actual PostgreSQL users.is_email_verified column.
  * =========================================================
  */
 
 /**
- * =========================================================
  * USER STATISTICS
- * =========================================================
  */
 export async function getUserStatistics() {
   const result = await db.query(`
@@ -38,13 +34,11 @@ export async function getUserStatistics() {
     WHERE deleted_at IS NULL
   `);
 
-  return result.rows[0];
+  return result.rows[0] || {};
 }
 
 /**
- * =========================================================
  * WALLET STATISTICS
- * =========================================================
  */
 export async function getWalletStatistics() {
   const result = await db.query(`
@@ -62,13 +56,11 @@ export async function getWalletStatistics() {
     FROM wallets
   `);
 
-  return result.rows[0];
+  return result.rows[0] || {};
 }
 
 /**
- * =========================================================
  * TRANSACTION STATISTICS
- * =========================================================
  */
 export async function getTransactionStatistics() {
   const result = await db.query(`
@@ -101,13 +93,11 @@ export async function getTransactionStatistics() {
     FROM transactions
   `);
 
-  return result.rows[0];
+  return result.rows[0] || {};
 }
 
 /**
- * =========================================================
  * TRANSACTION TYPE STATISTICS
- * =========================================================
  */
 export async function getTransactionTypeStatistics() {
   const result = await db.query(`
@@ -134,9 +124,7 @@ export async function getTransactionTypeStatistics() {
 }
 
 /**
- * =========================================================
  * RECENT TRANSACTIONS
- * =========================================================
  */
 export async function getRecentTransactions(limit = 10) {
   const safeLimit = Math.min(
@@ -183,9 +171,12 @@ export async function getRecentTransactions(limit = 10) {
 }
 
 /**
- * =========================================================
  * RECENT USERS
- * =========================================================
+ *
+ * Important:
+ * PostgreSQL column is is_email_verified.
+ * The API alias remains email_verified to preserve
+ * the existing frontend response structure.
  */
 export async function getRecentUsers(limit = 10) {
   const safeLimit = Math.min(
@@ -202,7 +193,9 @@ export async function getRecentUsers(limit = 10) {
       email,
       phone_number,
       status,
-      email_verified,
+
+      is_email_verified AS email_verified,
+
       phone_verified,
       created_at
 
