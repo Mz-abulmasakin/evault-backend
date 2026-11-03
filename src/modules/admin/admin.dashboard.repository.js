@@ -3,10 +3,10 @@ import db from "../../config/database.js";
 
 /**
  * =========================================================
- * ADMIN DASHBOARD REPOSITORY
+ * EVAULT ADMIN DASHBOARD REPOSITORY
  * =========================================================
- * Read-only dashboard queries.
- * Uses the actual PostgreSQL users.is_email_verified column.
+ * Uses the actual Neon PostgreSQL users schema.
+ * Read-only dashboard operations.
  * =========================================================
  */
 
@@ -173,10 +173,11 @@ export async function getRecentTransactions(limit = 10) {
 /**
  * RECENT USERS
  *
- * Important:
- * PostgreSQL column is is_email_verified.
- * The API alias remains email_verified to preserve
- * the existing frontend response structure.
+ * Actual database columns:
+ * is_email_verified
+ * is_phone_verified
+ *
+ * Response aliases preserve frontend compatibility.
  */
 export async function getRecentUsers(limit = 10) {
   const safeLimit = Math.min(
@@ -195,8 +196,8 @@ export async function getRecentUsers(limit = 10) {
       status,
 
       is_email_verified AS email_verified,
+      is_phone_verified AS phone_verified,
 
-      phone_verified,
       created_at
 
     FROM users

@@ -3,7 +3,7 @@ import db from "../../config/database.js";
 
 /**
  * =========================================================
- * ADMIN MANAGEMENT REPOSITORY
+ * EVAULT ADMIN MANAGEMENT REPOSITORY
  * =========================================================
  */
 
@@ -17,8 +17,8 @@ const USER_SELECT = `
     u.status,
 
     u.is_email_verified AS email_verified,
+    u.is_phone_verified AS phone_verified,
 
-    u.phone_verified,
     u.created_at,
 
     w.id AS wallet_id,
@@ -32,6 +32,9 @@ const USER_SELECT = `
   LEFT JOIN wallets w ON w.user_id = u.id
 `;
 
+/**
+ * BUILD USER FILTERS
+ */
 function buildUserFilters({ search, status }) {
   const clauses = ["u.deleted_at IS NULL"];
   const values = [];
@@ -102,7 +105,7 @@ export async function listAdminUsers({
 }
 
 /**
- * FIND ADMIN USER
+ * FIND ADMIN USER BY ID
  */
 export async function findAdminUserById(userId) {
   const result = await db.query(
@@ -212,8 +215,8 @@ export async function updateAdminUser(userId, fields) {
        status,
 
        is_email_verified AS email_verified,
+       is_phone_verified AS phone_verified,
 
-       phone_verified,
        created_at`,
     values
   );
@@ -222,7 +225,7 @@ export async function updateAdminUser(userId, fields) {
 }
 
 /**
- * TRANSACTION FILTERS
+ * BUILD TRANSACTION FILTERS
  */
 function buildTransactionFilters({
   search,
@@ -282,6 +285,9 @@ function buildTransactionFilters({
   };
 }
 
+/**
+ * ADMIN TRANSACTION QUERY
+ */
 const ADMIN_TRANSACTION_SELECT = `
   SELECT
     t.id,
