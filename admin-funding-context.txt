@@ -1,0 +1,1039 @@
+===== ADMIN ROUTES =====
+// src/modules/admin/admin.routes.js
+
+import express from "express";
+
+import { login, me } from "./admin.controller.js";
+import { getDashboard } from "./admin.dashboard.controller.js";
+import {
+  listUsers,
+  getUserDetails,
+  updateUser,
+  listTransactions,
+  getTransactionDetails,
+} from "./admin.management.controller.js";
+import {
+  adminMiddleware,
+  requireAdminRoles,
+} from "../../middleware/admin.middleware.js";
+
+const router = express.Router();
+
+// Public admin sign-in.
+router.post("/auth/login", login);
+
+// All routes below require a currently active administrator.
+router.use(adminMiddleware);
+
+router.get("/auth/me", me);
+router.get("/dashboard", getDashboard);
+
+// Customer management.
+router.get(
+  "/users",
+  requireAdminRoles("SUPER_ADMIN", "ADMIN", "OPERATIONS", "FINANCE", "SUPPORT"),
+  listUsers
+);
+router.get(
+  "/users/:id",
+  requireAdminRoles("SUPER_ADMIN", "ADMIN", "OPERATIONS", "FINANCE", "SUPPORT"),
+  getUserDetails
+);
+router.patch(
+  "/users/:id",
+  requireAdminRoles("SUPER_ADMIN", "ADMIN", "SUPPORT"),
+  updateUser
+);
+
+// Global transaction management.
+router.get(
+  "/transactions",
+  requireAdminRoles("SUPER_ADMIN", "ADMIN", "FINANCE", "SUPPORT"),
+  listTransactions
+);
+router.get(
+  "/transactions/:identifier",
+  requireAdminRoles("SUPER_ADMIN", "ADMIN", "FINANCE", "SUPPORT"),
+  getTransactionDetails
+);
+
+export default router;
+
+===== ADMIN CONTROLLER =====
+import {
+  loginAdmin,
+  getCurrentAdmin,
+} from "./admin.service.js";
+
+/**
+ * =========================================================
+ * ADMIN LOGIN
+ * =========================================================
+ *
+ * POST /api/v1/admin/auth/login
+ *
+ * =========================================================
+ */
+
+export async function login(
+  req,
+  res,
+  next
+) {
+  try {
+    const {
+      identifier,
+      password,
+    } = req.body;
+
+    const result =
+      await loginAdmin({
+        identifier,
+        password,
+      });
+
+    return res.status(200).json({
+      success: true,
+      message:
+        "Admin login successful.",
+      data: result,
+    });
+  } catch (error) {
+    console.error(
+      "Admin Login Error:",
+      error.message
+    );
+
+    return res.status(401).json({
+      success: false,
+      message:
+        error.message ||
+        "Invalid admin credentials.",
+    });
+  }
+}
+
+/**
+ * =========================================================
+ * CURRENT ADMIN
+ * =========================================================
+ *
+ * GET /api/v1/admin/auth/me
+ *
+ * =========================================================
+ */
+
+export async function me(
+  req,
+  res,
+  next
+) {
+  try {
+    const admin =
+      await getCurrentAdmin(
+        req.admin.adminId
+      );
+
+    return res.status(200).json({
+      success: true,
+      message:
+        "Admin profile retrieved successfully.",
+      data: {
+        admin,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+===== MANAGEMENT CONTROLLER =====
+// src/modules/admin/admin.management.controller.js
+
+import {
+  getAdminUsers,
+  getAdminUserDetails,
+  editAdminUser,
+  getAdminTransactions,
+  getAdminTransactionDetails,
+} from "./admin.management.service.js";
+
+function sendError(res, error, fallbackMessage) {
+  console.error(fallbackMessage, error);
+
+  if (error.code === "23505") {
+    return res.status(409).json({
+      success: false,
+      message: "A customer with one of those details already exists.",
+    });
+  }
+
+  return res.status(error.statusCode || 500).json({
+    success: false,
+    message: error.statusCode ? error.message : fallbackMessage,
+  });
+}
+
+export async function listUsers(req, res) {
+  try {
+    const result = await getAdminUsers(req.query);
+    return res.status(200).json({
+      success: true,
+      message: "Customers retrieved successfully.",
+      ...result,
+    });
+  } catch (error) {
+    return sendError(res, error, "Failed to retrieve customers.");
+  }
+}
+
+export async function getUserDetails(req, res) {
+  try {
+    const user = await getAdminUserDetails(req.params.id);
+    return res.status(200).json({
+      success: true,
+      message: "Customer details retrieved successfully.",
+      data: user,
+    });
+  } catch (error) {
+    return sendError(res, error, "Failed to retrieve customer details.");
+  }
+}
+
+export async function updateUser(req, res) {
+  try {
+    const user = await editAdminUser(req.params.id, req.body || {});
+    return res.status(200).json({
+      success: true,
+      message: "Customer information updated successfully.",
+      data: user,
+    });
+  } catch (error) {
+    return sendError(res, error, "Failed to update customer information.");
+  }
+}
+
+export async function listTransactions(req, res) {
+  try {
+    const result = await getAdminTransactions(req.query);
+    return res.status(200).json({
+      success: true,
+      message: "Transactions retrieved successfully.",
+      ...result,
+    });
+  } catch (error) {
+    return sendError(res, error, "Failed to retrieve transactions.");
+  }
+}
+
+export async function getTransactionDetails(req, res) {
+  try {
+    const transaction = await getAdminTransactionDetails(req.params.identifier);
+    return res.status(200).json({
+      success: true,
+      message: "Transaction details retrieved successfully.",
+      data: transaction,
+    });
+  } catch (error) {
+    return sendError(res, error, "Failed to retrieve transaction details.");
+  }
+}
+
+===== MANAGEMENT SERVICE =====
+
+// src/modules/admin/admin.management.service.js
+
+import {
+  listAdminUsers,
+  findAdminUserById,
+  emailAlreadyUsedByAnotherUser,
+  updateAdminUser,
+  listAdminTransactions,
+  findAdminTransaction,
+} from "./admin.management.repository.js";
+
+/**
+ * =========================================================
+ * ADMIN MANAGEMENT SERVICE
+ * =========================================================
+ */
+
+function toPositiveInteger(value, fallback, max) {
+  const parsed = Number.parseInt(value, 10);
+
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return fallback;
+  }
+
+  return Math.min(parsed, max);
+}
+
+function cleanSearch(value) {
+  return typeof value === "string"
+    ? value.trim().slice(0, 120)
+    : "";
+}
+
+function makeError(message, statusCode) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+}
+
+function validateDate(value, fieldName) {
+  if (!value) return "";
+
+  if (
+    typeof value !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(value)
+  ) {
+    throw makeError(
+      `${fieldName} must use YYYY-MM-DD format.`,
+      400
+    );
+  }
+
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+
+  if (
+    Number.isNaN(parsed.getTime()) ||
+    parsed.toISOString().slice(0, 10) !== value
+  ) {
+    throw makeError(`${fieldName} is not a valid date.`, 400);
+  }
+
+  return value;
+}
+
+function pagination(page, limit, total) {
+  return {
+    page,
+    limit,
+    total,
+    totalPages: Math.ceil(total / limit),
+    hasNextPage: page * limit < total,
+    hasPreviousPage: page > 1,
+  };
+}
+
+/**
+ * =========================================================
+ * CUSTOMER MANAGEMENT
+ * =========================================================
+ */
+
+export async function getAdminUsers(query = {}) {
+  const page = toPositiveInteger(query.page, 1, 1000000);
+  const limit = toPositiveInteger(query.limit, 20, 100);
+
+  const search = cleanSearch(query.search);
+  const status = cleanSearch(query.status).toUpperCase();
+
+  const allowedStatuses = [
+    "ACTIVE",
+    "SUSPENDED",
+    "DISABLED",
+  ];
+
+  if (status && !allowedStatuses.includes(status)) {
+    throw makeError("Invalid user status filter.", 400);
+  }
+
+  const result = await listAdminUsers({
+    page,
+    limit,
+    search,
+    status,
+  });
+
+  return {
+    data: result.rows,
+    pagination: pagination(page, limit, result.total),
+  };
+}
+
+export async function getAdminUserDetails(userId) {
+  if (!userId) {
+    throw makeError("User ID is required.", 400);
+  }
+
+  const user = await findAdminUserById(userId);
+
+  if (!user) {
+    throw makeError("User not found.", 404);
+  }
+
+  return user;
+}
+
+/**
+ * =========================================================
+ * UPDATE CUSTOMER INFORMATION
+ * =========================================================
+ */
+
+export async function editAdminUser(userId, body = {}) {
+  if (!userId) {
+    throw makeError("User ID is required.", 400);
+  }
+
+  const fields = {};
+
+  if (Object.prototype.hasOwnProperty.call(body, "fullName")) {
+    if (
+      typeof body.fullName !== "string" ||
+      !body.fullName.trim()
+    ) {
+      throw makeError("Full name cannot be empty.", 400);
+    }
+
+    if (body.fullName.trim().length > 150) {
+      throw makeError("Full name is too long.", 400);
+    }
+
+    fields.fullName = body.fullName.trim();
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, "email")) {
+    if (typeof body.email !== "string") {
+      throw makeError("A valid email address is required.", 400);
+    }
+
+    const email = body.email.trim().toLowerCase();
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      throw makeError("A valid email address is required.", 400);
+    }
+
+    if (email.length > 150) {
+      throw makeError("Email address is too long.", 400);
+    }
+
+    fields.email = email;
+
+    if (
+      await emailAlreadyUsedByAnotherUser(
+        fields.email,
+        userId
+      )
+    ) {
+      throw makeError(
+        "That email address is already used by another customer.",
+        409
+      );
+    }
+  }
+
+  if (
+    Object.prototype.hasOwnProperty.call(body, "phoneNumber")
+  ) {
+    if (
+      typeof body.phoneNumber !== "string" ||
+      !body.phoneNumber.trim()
+    ) {
+      throw makeError("Phone number cannot be empty.", 400);
+    }
+
+    const phoneNumber = body.phoneNumber.trim();
+
+    if (phoneNumber.length > 20) {
+      throw makeError("Phone number cannot exceed 20 characters.", 400);
+    }
+
+    fields.phoneNumber = phoneNumber;
+  }
+
+  if (Object.keys(fields).length === 0) {
+    throw makeError(
+      "Provide at least one editable field: fullName, email or phoneNumber.",
+      400
+    );
+  }
+
+  const updated = await updateAdminUser(userId, fields);
+
+  if (!updated) {
+    throw makeError("User not found.", 404);
+  }
+
+  return updated;
+}
+
+/**
+ * =========================================================
+ * TRANSACTION MANAGEMENT
+ * =========================================================
+ */
+
+export async function getAdminTransactions(query = {}) {
+  const page = toPositiveInteger(query.page, 1, 1000000);
+  const limit = toPositiveInteger(query.limit, 20, 100);
+
+  const search = cleanSearch(query.search);
+  const status = cleanSearch(query.status).toUpperCase();
+  const type = cleanSearch(query.type).toUpperCase();
+
+  const dateFrom = validateDate(query.dateFrom, "dateFrom");
+  const dateTo = validateDate(query.dateTo, "dateTo");
+
+  if (dateFrom && dateTo && dateFrom > dateTo) {
+    throw makeError(
+      "dateFrom cannot be later than dateTo.",
+      400
+    );
+  }
+
+  const result = await listAdminTransactions({
+    page,
+    limit,
+    search,
+    status,
+    type,
+    dateFrom,
+    dateTo,
+  });
+
+  return {
+    data: result.rows,
+    pagination: pagination(page, limit, result.total),
+  };
+}
+
+export async function getAdminTransactionDetails(identifier) {
+  if (!identifier) {
+    throw makeError(
+      "Transaction ID or reference is required.",
+      400
+    );
+  }
+
+  const transaction = await findAdminTransaction(identifier);
+
+  if (!transaction) {
+    throw makeError("Transaction not found.", 404);
+  }
+
+  return transaction;
+}
+
+===== MANAGEMENT REPOSITORY =====
+
+import db from "../../config/database.js";
+
+/**
+ * =========================================================
+ * EVAULT ADMIN MANAGEMENT REPOSITORY
+ * =========================================================
+ */
+
+const USER_SELECT = `
+  SELECT
+    u.id,
+    u.username,
+    u.full_name,
+    u.email,
+    u.phone_number,
+    u.status,
+
+    u.is_email_verified AS email_verified,
+    u.is_phone_verified AS phone_verified,
+
+    u.created_at,
+
+    w.id AS wallet_id,
+    w.wallet_number,
+    w.available_balance,
+    w.ledger_balance,
+    w.currency,
+    w.status AS wallet_status
+
+  FROM users u
+  LEFT JOIN wallets w ON w.user_id = u.id
+`;
+
+/**
+ * BUILD USER FILTERS
+ */
+function buildUserFilters({ search, status }) {
+  const clauses = ["u.deleted_at IS NULL"];
+  const values = [];
+
+  if (search) {
+    values.push(`%${search}%`);
+    const p = `$${values.length}`;
+
+    clauses.push(`(
+      u.id::text ILIKE ${p}
+      OR COALESCE(u.username, '') ILIKE ${p}
+      OR COALESCE(u.full_name, '') ILIKE ${p}
+      OR COALESCE(u.email, '') ILIKE ${p}
+      OR COALESCE(u.phone_number, '') ILIKE ${p}
+    )`);
+  }
+
+  if (status) {
+    values.push(status);
+    clauses.push(`u.status = $${values.length}`);
+  }
+
+  return {
+    whereSql: clauses.join(" AND "),
+    values,
+  };
+}
+
+/**
+ * LIST ADMIN USERS
+ */
+export async function listAdminUsers({
+  page,
+  limit,
+  search,
+  status,
+}) {
+  const { whereSql, values } = buildUserFilters({
+    search,
+    status,
+  });
+
+  const limitIndex = values.length + 1;
+  const offsetIndex = values.length + 2;
+  const offset = (page - 1) * limit;
+
+  const [rowsResult, countResult] = await Promise.all([
+    db.query(
+      `${USER_SELECT}
+       WHERE ${whereSql}
+       ORDER BY u.created_at DESC
+       LIMIT $${limitIndex} OFFSET $${offsetIndex}`,
+      [...values, limit, offset]
+    ),
+
+    db.query(
+      `SELECT COUNT(*)::int AS total
+       FROM users u
+       WHERE ${whereSql}`,
+      values
+    ),
+  ]);
+
+  return {
+    rows: rowsResult.rows,
+    total: Number(countResult.rows[0]?.total || 0),
+  };
+}
+
+/**
+ * FIND ADMIN USER BY ID
+ */
+export async function findAdminUserById(userId) {
+  const result = await db.query(
+    `${USER_SELECT}
+     WHERE u.id::text = $1
+       AND u.deleted_at IS NULL
+     LIMIT 1`,
+    [String(userId)]
+  );
+
+  const user = result.rows[0];
+
+  if (!user) return null;
+
+  let recentTransactions = [];
+
+  if (user.wallet_id) {
+    const transactionsResult = await db.query(
+      `SELECT
+         id,
+         reference,
+         type,
+         amount,
+         balance_before,
+         balance_after,
+         status,
+         description,
+         metadata,
+         created_at
+       FROM transactions
+       WHERE wallet_id = $1
+       ORDER BY created_at DESC
+       LIMIT 20`,
+      [user.wallet_id]
+    );
+
+    recentTransactions = transactionsResult.rows;
+  }
+
+  return {
+    ...user,
+    recent_transactions: recentTransactions,
+  };
+}
+
+/**
+ * CHECK EMAIL USAGE
+ */
+export async function emailAlreadyUsedByAnotherUser(
+  email,
+  userId
+) {
+  const result = await db.query(
+    `SELECT id
+     FROM users
+     WHERE LOWER(email) = LOWER($1)
+       AND id::text <> $2
+       AND deleted_at IS NULL
+     LIMIT 1`,
+    [email, String(userId)]
+  );
+
+  return result.rows.length > 0;
+}
+
+/**
+ * UPDATE ADMIN USER
+ */
+export async function updateAdminUser(userId, fields) {
+  const allowedColumns = {
+    fullName: "full_name",
+    email: "email",
+    phoneNumber: "phone_number",
+  };
+
+  const assignments = [];
+  const values = [];
+
+  for (const [key, column] of Object.entries(allowedColumns)) {
+    if (
+      Object.prototype.hasOwnProperty.call(fields, key)
+    ) {
+      values.push(fields[key]);
+      assignments.push(`${column} = $${values.length}`);
+    }
+  }
+
+  if (assignments.length === 0) {
+    return findAdminUserById(userId);
+  }
+
+  values.push(String(userId));
+
+  const idParameter = `$${values.length}`;
+
+  const result = await db.query(
+    `UPDATE users
+     SET ${assignments.join(", ")}
+     WHERE id::text = ${idParameter}
+       AND deleted_at IS NULL
+     RETURNING
+       id,
+       username,
+       full_name,
+       email,
+       phone_number,
+       status,
+
+       is_email_verified AS email_verified,
+       is_phone_verified AS phone_verified,
+
+       created_at`,
+    values
+  );
+
+  return result.rows[0] || null;
+}
+
+/**
+ * BUILD TRANSACTION FILTERS
+ */
+function buildTransactionFilters({
+  search,
+  status,
+  type,
+  dateFrom,
+  dateTo,
+}) {
+  const clauses = [];
+  const values = [];
+
+  if (search) {
+    values.push(`%${search}%`);
+    const p = `$${values.length}`;
+
+    clauses.push(`(
+      t.id::text ILIKE ${p}
+      OR COALESCE(t.reference, '') ILIKE ${p}
+      OR COALESCE(t.type, '') ILIKE ${p}
+      OR COALESCE(t.description, '') ILIKE ${p}
+      OR COALESCE(u.username, '') ILIKE ${p}
+      OR COALESCE(u.full_name, '') ILIKE ${p}
+      OR COALESCE(u.email, '') ILIKE ${p}
+      OR COALESCE(u.phone_number, '') ILIKE ${p}
+    )`);
+  }
+
+  if (status) {
+    values.push(status);
+    clauses.push(`t.status = $${values.length}`);
+  }
+
+  if (type) {
+    values.push(type);
+    clauses.push(`t.type = $${values.length}`);
+  }
+
+  if (dateFrom) {
+    values.push(dateFrom);
+    clauses.push(
+      `t.created_at >= $${values.length}::date`
+    );
+  }
+
+  if (dateTo) {
+    values.push(dateTo);
+    clauses.push(
+      `t.created_at < ($${values.length}::date + INTERVAL '1 day')`
+    );
+  }
+
+  return {
+    whereSql: clauses.length
+      ? `WHERE ${clauses.join(" AND ")}`
+      : "",
+    values,
+  };
+}
+
+/**
+ * ADMIN TRANSACTION QUERY
+ */
+const ADMIN_TRANSACTION_SELECT = `
+  SELECT
+    t.id,
+    t.wallet_id,
+    t.reference,
+    t.type,
+    t.amount,
+    t.balance_before,
+    t.balance_after,
+    t.status,
+    t.description,
+    t.metadata,
+    t.created_at,
+    t.updated_at,
+
+    u.id AS user_id,
+    u.username,
+    u.full_name,
+    u.email,
+    u.phone_number,
+
+    w.wallet_number,
+    w.currency
+
+  FROM transactions t
+
+  LEFT JOIN wallets w ON w.id = t.wallet_id
+  LEFT JOIN users u ON u.id = w.user_id
+`;
+
+/**
+ * LIST ADMIN TRANSACTIONS
+ */
+export async function listAdminTransactions({
+  page,
+  limit,
+  search,
+  status,
+  type,
+  dateFrom,
+  dateTo,
+}) {
+  const { whereSql, values } = buildTransactionFilters({
+    search,
+    status,
+    type,
+    dateFrom,
+    dateTo,
+  });
+
+  const limitIndex = values.length + 1;
+  const offsetIndex = values.length + 2;
+  const offset = (page - 1) * limit;
+
+  const [rowsResult, countResult] = await Promise.all([
+    db.query(
+      `${ADMIN_TRANSACTION_SELECT}
+       ${whereSql}
+       ORDER BY t.created_at DESC
+       LIMIT $${limitIndex} OFFSET $${offsetIndex}`,
+      [...values, limit, offset]
+    ),
+
+    db.query(
+      `SELECT COUNT(*)::int AS total
+       FROM transactions t
+       LEFT JOIN wallets w ON w.id = t.wallet_id
+       LEFT JOIN users u ON u.id = w.user_id
+       ${whereSql}`,
+      values
+    ),
+  ]);
+
+  return {
+    rows: rowsResult.rows,
+    total: Number(countResult.rows[0]?.total || 0),
+  };
+}
+
+/**
+ * FIND ADMIN TRANSACTION
+ */
+export async function findAdminTransaction(identifier) {
+  const result = await db.query(
+    `${ADMIN_TRANSACTION_SELECT}
+     WHERE t.id::text = $1 OR t.reference = $1
+     ORDER BY t.created_at DESC
+     LIMIT 1`,
+    [String(identifier)]
+  );
+
+  return result.rows[0] || null;
+}
+
+===== DATABASE CONFIGURATION =====
+// src/config/database.js
+
+import pg from "pg";
+import env from "./env.js";
+
+const { Pool } = pg;
+
+const database = env.database || {};
+
+const databaseUrl = String(database.url || "").trim();
+
+const hasSslMode =
+  /[?&]sslmode=/i.test(databaseUrl);
+
+const isNeon =
+  /\.neon\.tech(?:[/:?]|$)/i.test(databaseUrl);
+
+// =========================================================
+// DATABASE CONFIGURATION
+// =========================================================
+
+let poolConfig;
+
+if (databaseUrl) {
+  // -------------------------------------------------------
+  // RENDER + NEON
+  // -------------------------------------------------------
+
+  poolConfig = {
+    connectionString: databaseUrl,
+
+    // Neon connection strings should normally include
+    // sslmode=require. Do not override SSL options already
+    // supplied in the URL.
+    ...(
+      isNeon && !hasSslMode
+        ? {
+            ssl: {
+              rejectUnauthorized: false,
+            },
+          }
+        : {}
+    ),
+
+    max: database.poolMax || 10,
+
+    idleTimeoutMillis:
+      database.idleTimeoutMillis || 30000,
+
+    connectionTimeoutMillis:
+      database.connectionTimeoutMillis || 15000,
+
+    keepAlive: true,
+  };
+} else {
+  // -------------------------------------------------------
+  // LOCAL POSTGRESQL FALLBACK
+  // -------------------------------------------------------
+
+  poolConfig = {
+    host: database.host,
+
+    port: database.port || 5432,
+
+    database: database.name,
+
+    user: database.user,
+
+    password: database.password,
+
+    ...(database.ssl
+      ? {
+          ssl: {
+            rejectUnauthorized: false,
+          },
+        }
+      : {}),
+
+    max: database.poolMax || 10,
+
+    idleTimeoutMillis:
+      database.idleTimeoutMillis || 30000,
+
+    connectionTimeoutMillis:
+      database.connectionTimeoutMillis || 15000,
+
+    keepAlive: true,
+  };
+}
+
+// =========================================================
+// CREATE POOL
+// =========================================================
+
+const pool = new Pool(poolConfig);
+
+// =========================================================
+// CONNECTION EVENTS
+// =========================================================
+
+pool.on("connect", () => {
+  console.log(
+    "[DATABASE] PostgreSQL client connected."
+  );
+});
+
+pool.on("error", (error) => {
+  console.error(
+    "[DATABASE] Unexpected database error:",
+    error.message,
+    error.code || ""
+  );
+});
+
+// =========================================================
+// VERIFY CONNECTION
+// =========================================================
+
+pool
+  .query("SELECT 1 AS connected")
+  .then(() => {
+    console.log(
+      databaseUrl
+        ? "[DATABASE] Neon/DATABASE_URL connection successful."
+        : "[DATABASE] Host-based PostgreSQL connection successful."
+    );
+  })
+  .catch((error) => {
+    console.error(
+      "[DATABASE] Connection test failed:",
+      error.message,
+      error.code || ""
+    );
+  });
+
+export default pool;

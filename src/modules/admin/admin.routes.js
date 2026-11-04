@@ -15,6 +15,7 @@ import {
   adminMiddleware,
   requireAdminRoles,
 } from "../../middleware/admin.middleware.js";
+import { manualFundUser } from "./admin.manual-funding.controller.js";
 
 const router = express.Router();
 
@@ -56,4 +57,9 @@ router.get(
   getTransactionDetails
 );
 
+router.post(
+  "/users/:id/manual-funding",
+  requireAdminRoles("SUPER_ADMIN", "ADMIN", "FINANCE"),
+  manualFundUser
+);
 export default router;

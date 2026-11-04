@@ -1,0 +1,1241 @@
+===== FUNDING SERVICE =====
+
+  const amount =
+    Number(verified?.amountPaid);
+
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error(
+      "Invalid funding amount"
+    );
+  }
+
+  console.log(
+    "VERIFIED FUNDING AMOUNT:",
+    amount
+  );
+
+  // -------------------------------------------------------
+  // 7. Start the database transaction
+  // -------------------------------------------------------
+
+  const client =
+    await db.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    // -----------------------------------------------------
+    // 8. Prevent duplicate funding
+    // -----------------------------------------------------
+
+    const existing =
+      await client.query(
+        `
+          SELECT *
+          FROM transactions
+          WHERE reference = $1
+          LIMIT 1
+        `,
+        [transactionReference]
+      );
+
+    if (existing.rows.length > 0) {
+      console.log(
+        "DUPLICATE MONNIFY TRANSACTION:",
+        transactionReference
+      );
+
+      await client.query("ROLLBACK");
+
+      return {
+        success: true,
+        duplicate: true,
+        transaction: existing.rows[0],
+      };
+    }
+
+    // -----------------------------------------------------
+    // 9. Lock the wallet before updating its balance
+    // -----------------------------------------------------
+
+    console.log(
+      "LOCKING WALLET:",
+      reservedAccount.wallet_id
+    );
+
+    const wallet =
+      await findWalletForUpdate(
+        reservedAccount.wallet_id,
+        client
+      );
+
+    if (!wallet) {
+      throw new Error(
+        "Wallet not found"
+      );
+    }
+
+    // -----------------------------------------------------
+    // 10. Record balances before funding
+    // -----------------------------------------------------
+
+    const balanceBefore =
+      Number(wallet.available_balance || 0);
+
+    const ledgerBalanceBefore =
+      Number(wallet.ledger_balance || 0);
+
+    console.log(
+      "WALLET BEFORE FUNDING:",
+      {
+        walletId: wallet.id,
+        availableBalance: balanceBefore,
+        ledgerBalance: ledgerBalanceBefore,
+        fundingAmount: amount,
+      }
+    );
+
+    // -----------------------------------------------------
+    // 11. Credit the wallet
+    // -----------------------------------------------------
+
+    console.log(
+      "CREDITING WALLET:",
+      {
+        walletId: wallet.id,
+        amount,
+      }
+    );
+
+    const updatedWallet =
+      await creditWallet(
+        wallet.id,
+        amount,
+        client
+      );
+
+    if (!updatedWallet) {
+      throw new Error(
+        "Failed to credit wallet"
+      );
+    }
+
+    // -----------------------------------------------------
+    // 12. Record balances after funding
+    // -----------------------------------------------------
+
+    const balanceAfter =
+      Number(updatedWallet.available_balance || 0);
+
+    const ledgerBalanceAfter =
+      Number(updatedWallet.ledger_balance || 0);
+
+    console.log(
+      "WALLET AFTER FUNDING:",
+      {
+        walletId: updatedWallet.id,
+        availableBalance: balanceAfter,
+        ledgerBalance: ledgerBalanceAfter,
+      }
+    );
+
+    // -----------------------------------------------------
+    // 13. Record the transaction
+    // -----------------------------------------------------
+
+    console.log(
+      "RECORDING FUNDING TRANSACTION:",
+      transactionReference
+    );
+
+    const transaction =
+      await recordFunding(
+        {
+          walletId: wallet.id,
+
+          reference:
+            transactionReference,
+
+          amount,
+
+          balanceBefore,
+
+          balanceAfter,
+
+          description:
+            "Wallet funding via Monnify",
+
+          metadata: {
+            source: "MONNIFY",
+
+            transactionReference,
+
+            paymentReference:
+              eventData.paymentReference ||
+              null,
+
+            accountNumber,
+
+            amountPaid: amount,
+
+            paymentStatus:
+              verified.paymentStatus,
+
+            paymentMethod:
+              verified.paymentMethod ||
+              eventData.paymentMethod ||
+              null,
+
+            currency:
+              verified.currency ||
+              eventData.currency ||
+              "NGN",
+
+            webhook: webhookData,
+          },
+        },
+        client
+      );
+
+    // -----------------------------------------------------
+    // 14. Commit the wallet credit and transaction
+    // -----------------------------------------------------
+
+    await client.query("COMMIT");
+
+    console.log(
+      "FUNDING COMMITTED SUCCESSFULLY:",
+      {
+        transactionReference,
+        walletId: wallet.id,
+        amount,
+        balanceAfter,
+      }
+    );
+
+    // -----------------------------------------------------
+    // 15. Send notification
+    //
+    // Notification failure must not undo a committed
+    // wallet credit.
+    // -----------------------------------------------------
+
+    try {
+      await notifyWalletFunding({
+        userId: reservedAccount.user_id,
+        amount,
+        balance: balanceAfter,
+        reference: transactionReference,
+      });
+
+      console.log(
+        "FUNDING NOTIFICATION SENT:",
+        transactionReference
+      );
+    } catch (notificationError) {
+      console.error(
+        "Funding notification failed:",
+        notificationError.message
+      );
+    }
+
+    // -----------------------------------------------------
+    // 16. Return the result
+    // -----------------------------------------------------
+
+    return {
+      success: true,
+
+      transaction,
+
+      wallet: {
+        id: updatedWallet.id,
+        availableBalance: balanceAfter,
+        ledgerBalance: ledgerBalanceAfter,
+      },
+    };
+  } catch (error) {
+    // -----------------------------------------------------
+    // Roll back unsuccessful database transactions
+    // -----------------------------------------------------
+
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      console.error(
+        "Funding rollback error:",
+        rollbackError.message
+      );
+    }
+
+    console.error(
+      "PROCESS FUNDING ERROR:",
+      error.message
+    );
+
+    throw error;
+  } finally {
+    // Always release the pooled connection.
+    client.release();
+  }
+}
+===== FUNDING REPOSITORY =====
+// src/modules/wallet/wallet.repository.js
+
+import db from "../../config/database.js";
+
+/**
+ * =========================================================
+ * CREATE WALLET
+ * =========================================================
+ */
+export async function createWallet(
+  data,
+  client = db
+) {
+  const {
+    userId,
+    walletNumber,
+    availableBalance = 0,
+    ledgerBalance = 0,
+    currency = "NGN",
+    status = "ACTIVE",
+  } = data;
+
+  const result = await client.query(
+    `
+    INSERT INTO wallets
+    (
+      user_id,
+      wallet_number,
+      available_balance,
+      ledger_balance,
+      currency,
+      status
+    )
+    VALUES
+    (
+      $1,
+      $2,
+      $3,
+      $4,
+      $5,
+      $6
+    )
+    RETURNING *
+    `,
+    [
+      userId,
+      walletNumber,
+      availableBalance,
+      ledgerBalance,
+      currency,
+      status,
+    ]
+  );
+
+  return result.rows[0];
+}
+
+
+/**
+ * =========================================================
+ * FIND WALLET BY USER ID
+ * =========================================================
+ */
+export async function findWalletByUserId(
+  userId
+) {
+  const result = await db.query(
+    `
+    SELECT *
+    FROM wallets
+    WHERE user_id = $1
+    LIMIT 1
+    `,
+    [userId]
+  );
+
+  return result.rows[0] || null;
+}
+
+
+/**
+ * =========================================================
+ * FIND WALLET BY WALLET NUMBER
+ * =========================================================
+ */
+export async function findWalletByWalletNumber(
+  walletNumber
+) {
+  const result = await db.query(
+    `
+    SELECT *
+    FROM wallets
+    WHERE wallet_number = $1
+    LIMIT 1
+    `,
+    [walletNumber]
+  );
+
+  return result.rows[0] || null;
+}
+
+
+/**
+ * =========================================================
+ * FIND WALLET FOR UPDATE
+ * =========================================================
+ *
+ * Used during funding/debit transactions.
+ *
+ * FOR UPDATE locks the wallet row until the transaction
+ * commits or rolls back.
+ */
+export async function findWalletForUpdate(
+  walletId,
+  client
+) {
+  const executor = client || db;
+
+  const result = await executor.query(
+    `
+    SELECT *
+    FROM wallets
+    WHERE id = $1
+    FOR UPDATE
+    `,
+    [walletId]
+  );
+
+  return result.rows[0] || null;
+}
+
+
+/**
+ * =========================================================
+ * UPDATE WALLET AVAILABLE BALANCE
+ * =========================================================
+ */
+export async function updateWalletBalance(
+  walletId,
+  newBalance,
+  client = db
+) {
+  const result = await client.query(
+    `
+    UPDATE wallets
+    SET
+      available_balance = $2,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE id = $1
+    RETURNING *
+    `,
+    [
+      walletId,
+      newBalance,
+    ]
+  );
+
+  return result.rows[0] || null;
+}
+
+
+/**
+ * =========================================================
+ * CREDIT WALLET
+ * =========================================================
+ *
+ * Adds money to the available balance.
+ */
+export async function creditWallet(
+  walletId,
+  amount,
+  client
+) {
+  const executor = client || db;
+
+  const result = await executor.query(
+    `
+    UPDATE wallets
+    SET
+      available_balance = available_balance + $2,
+      ledger_balance = ledger_balance + $2,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE id = $1
+    RETURNING *
+    `,
+    [
+      walletId,
+      amount,
+    ]
+  );
+
+  return result.rows[0] || null;
+}
+
+
+/**
+ * =========================================================
+ * DEBIT WALLET
+ * =========================================================
+ *
+ * Removes money from the available and ledger balances.
+ *
+ * The available balance check happens inside SQL.
+ */
+export async function debitWallet(
+  walletId,
+  amount,
+  client
+) {
+  const executor = client || db;
+
+  const result = await executor.query(
+    `
+    UPDATE wallets
+    SET
+      available_balance = available_balance - $2,
+      ledger_balance = ledger_balance - $2,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE
+      id = $1
+      AND available_balance >= $2
+    RETURNING *
+    `,
+    [
+      walletId,
+      amount,
+    ]
+  );
+
+  return result.rows[0] || null;
+}
+
+
+/**
+ * =========================================================
+ * GET LATEST WALLET NUMBER
+ * =========================================================
+ */
+export async function getLatestWalletNumber() {
+  const result = await db.query(
+    `
+    SELECT wallet_number
+    FROM wallets
+    ORDER BY created_at DESC
+    LIMIT 1
+    `
+  );
+
+  return result.rows[0]?.wallet_number || null;
+}
+
+
+/**
+ * =========================================================
+ * UPDATE WALLET STATUS
+ * =========================================================
+ */
+export async function updateWalletStatus(
+  walletId,
+  status,
+  client = db
+) {
+  const result = await client.query(
+    `
+    UPDATE wallets
+    SET
+      status = $2,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE id = $1
+    RETURNING *
+    `,
+    [
+      walletId,
+      status,
+    ]
+  );
+
+  return result.rows[0] || null;
+}
+===== TRANSACTION REPOSITORY =====
+
+// src/modules/transactions/transaction.repository.js
+
+import db from "../../config/database.js";
+
+/**
+ * =========================================================
+ * CREATE TRANSACTION
+ * =========================================================
+ */
+export async function createTransaction(
+  data,
+  client = db
+) {
+  const {
+    walletId,
+    reference,
+    type,
+    amount,
+    balanceBefore,
+    balanceAfter,
+    status = "SUCCESS",
+    description,
+    metadata = {},
+  } = data;
+
+  const result = await client.query(
+    `
+    INSERT INTO transactions
+    (
+      wallet_id,
+      reference,
+      type,
+      amount,
+      balance_before,
+      balance_after,
+      status,
+      description,
+      metadata
+    )
+    VALUES
+    (
+      $1,
+      $2,
+      $3,
+      $4,
+      $5,
+      $6,
+      $7,
+      $8,
+      $9
+    )
+    RETURNING *
+    `,
+    [
+      walletId,
+      reference,
+      type,
+      amount,
+      balanceBefore,
+      balanceAfter,
+      status,
+      description,
+      metadata,
+    ]
+  );
+
+  return result.rows[0];
+}
+
+
+/**
+ * =========================================================
+ * FIND TRANSACTION BY ID
+ * =========================================================
+ */
+export async function findTransactionById(
+  id
+) {
+  const result = await db.query(
+    `
+    SELECT *
+    FROM transactions
+    WHERE id = $1
+    LIMIT 1
+    `,
+    [id]
+  );
+
+  return result.rows[0] || null;
+}
+
+
+/**
+ * =========================================================
+ * FIND TRANSACTION BY REFERENCE
+ * =========================================================
+ */
+export async function findTransactionByReference(
+  reference
+) {
+  const result = await db.query(
+    `
+    SELECT *
+    FROM transactions
+    WHERE reference = $1
+    LIMIT 1
+    `,
+    [reference]
+  );
+
+  return result.rows[0] || null;
+}
+
+
+/**
+ * =========================================================
+ * FIND TRANSACTIONS BY WALLET
+ * =========================================================
+ */
+export async function findTransactionsByWallet(
+  walletId
+) {
+  const result = await db.query(
+    `
+    SELECT *
+    FROM transactions
+    WHERE wallet_id = $1
+    ORDER BY created_at DESC
+    `,
+    [walletId]
+  );
+
+  return result.rows;
+}
+
+
+/**
+ * =========================================================
+ * FIND TRANSACTIONS BY WALLET — PAGINATED
+ * =========================================================
+ */
+export async function findTransactionsByWalletPaginated(
+  walletId,
+  limit = 50,
+  offset = 0
+) {
+  const result = await db.query(
+    `
+    SELECT *
+    FROM transactions
+    WHERE wallet_id = $1
+    ORDER BY created_at DESC
+    LIMIT $2
+    OFFSET $3
+    `,
+    [
+      walletId,
+      limit,
+      offset,
+    ]
+  );
+
+  return result.rows;
+}
+
+
+/**
+ * =========================================================
+ * UPDATE TRANSACTION STATUS
+ * =========================================================
+ *
+ * Supported calls:
+ *
+ * ---------------------------------------------------------
+ * 1.
+ *
+ * updateTransactionStatus(
+ *   transactionId,
+ *   status
+ * )
+ *
+ * ---------------------------------------------------------
+ * 2.
+ *
+ * updateTransactionStatus(
+ *   transactionId,
+ *   status,
+ *   client
+ * )
+ *
+ * ---------------------------------------------------------
+ * 3.
+ *
+ * updateTransactionStatus(
+ *   reference,
+ *   status,
+ *   metadata,
+ *   client
+ * )
+ *
+ * ---------------------------------------------------------
+ *
+ * The identifier can be either:
+ *
+ * - transaction UUID
+ * - transaction reference
+ *
+ * Existing metadata is preserved and merged with
+ * the new metadata.
+ *
+ * =========================================================
+ */
+export async function updateTransactionStatus(
+  identifier,
+  status,
+  metadataOrClient = {},
+  possibleClient = db
+) {
+  let metadata = {};
+  let client = possibleClient;
+
+
+  /**
+   * -------------------------------------------------------
+   * BACKWARD COMPATIBILITY
+   * -------------------------------------------------------
+   *
+   * If the third argument has a query() function,
+   * it is a PostgreSQL client rather than metadata.
+   */
+  if (
+    metadataOrClient &&
+    typeof metadataOrClient.query === "function"
+  ) {
+    client = metadataOrClient;
+    metadata = {};
+  } else {
+    metadata =
+      metadataOrClient &&
+      typeof metadataOrClient === "object"
+        ? metadataOrClient
+        : {};
+
+    client = possibleClient || db;
+  }
+
+
+  /**
+   * -------------------------------------------------------
+   * UPDATE TRANSACTION
+   * -------------------------------------------------------
+   *
+   * We support both transaction UUID and reference.
+   *
+   * Existing JSONB metadata is merged with the new
+   * metadata supplied by the caller.
+   */
+  const result = await client.query(
+    `
+    UPDATE transactions
+    SET
+      status = $2,
+
+      metadata =
+        COALESCE(metadata, '{}'::jsonb)
+        ||
+        $3::jsonb,
+
+      updated_at = CURRENT_TIMESTAMP
+
+    WHERE
+      id::text = $1
+      OR reference = $1
+
+    RETURNING *
+    `,
+    [
+      String(identifier),
+      status,
+      JSON.stringify(metadata),
+    ]
+  );
+
+
+  /**
+   * -------------------------------------------------------
+   * RETURN UPDATED TRANSACTION
+   * -------------------------------------------------------
+   */
+  return result.rows[0] || null;
+}
+
+===== NOTIFICATION REPOSITORY =====
+// src/modules/notification/notification.repository.js
+
+import db from "../../config/database.js";
+
+
+/**
+ * =========================================================
+ * CREATE NOTIFICATION
+ * =========================================================
+ */
+export async function createNotification(
+  data,
+  client = db
+) {
+
+  const {
+    userId,
+    title,
+    message,
+    type = "INFO",
+    isRead = false,
+    metadata = {},
+  } = data;
+
+
+  const result =
+    await client.query(
+      `
+      INSERT INTO notifications
+      (
+        user_id,
+        title,
+        message,
+        type,
+        is_read,
+        data
+      )
+      VALUES
+      (
+        $1,
+        $2,
+        $3,
+        $4,
+        $5,
+        $6
+      )
+      RETURNING *
+      `,
+      [
+        userId,
+        title,
+        message,
+        type,
+        isRead,
+        metadata,
+      ]
+    );
+
+
+  return result.rows[0];
+}
+
+
+/**
+ * =========================================================
+ * FIND NOTIFICATION BY ID
+ * =========================================================
+ */
+export async function findNotificationById(
+  id,
+  userId
+) {
+
+  const result =
+    await db.query(
+      `
+      SELECT *
+      FROM notifications
+      WHERE
+        id = $1
+        AND user_id = $2
+      LIMIT 1
+      `,
+      [
+        id,
+        userId,
+      ]
+    );
+
+
+  return result.rows[0] || null;
+}
+
+
+/**
+ * =========================================================
+ * GET ALL USER NOTIFICATIONS
+ * =========================================================
+ */
+export async function findNotificationsByUser(
+  userId
+) {
+
+  const result =
+    await db.query(
+      `
+      SELECT *
+      FROM notifications
+      WHERE user_id = $1
+      ORDER BY created_at DESC
+      `,
+      [userId]
+    );
+
+
+  return result.rows;
+}
+
+
+/**
+ * =========================================================
+ * GET UNREAD USER NOTIFICATIONS
+ * =========================================================
+ */
+export async function findUnreadNotifications(
+  userId
+) {
+
+  const result =
+    await db.query(
+      `
+      SELECT *
+      FROM notifications
+      WHERE
+        user_id = $1
+        AND is_read = false
+      ORDER BY created_at DESC
+      `,
+      [userId]
+    );
+
+
+  return result.rows;
+}
+
+
+/**
+ * =========================================================
+ * COUNT UNREAD
+ * =========================================================
+ */
+export async function countUnreadNotifications(
+  userId
+) {
+
+  const result =
+    await db.query(
+      `
+      SELECT COUNT(*) AS total
+      FROM notifications
+      WHERE
+        user_id = $1
+        AND is_read = false
+      `,
+      [userId]
+    );
+
+
+  return Number(
+    result.rows[0]?.total || 0
+  );
+}
+
+
+/**
+ * =========================================================
+ * MARK ONE AS READ
+ * =========================================================
+ */
+export async function markNotificationAsRead(
+  id,
+  userId
+) {
+
+  const result =
+    await db.query(
+      `
+      UPDATE notifications
+      SET
+        is_read = true,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE
+        id = $1
+        AND user_id = $2
+      RETURNING *
+      `,
+      [
+        id,
+        userId,
+      ]
+    );
+
+
+  return result.rows[0] || null;
+}
+
+
+/**
+ * =========================================================
+ * MARK ALL AS READ
+ * =========================================================
+ */
+export async function markAllNotificationsAsRead(
+  userId
+) {
+
+  await db.query(
+    `
+    UPDATE notifications
+    SET
+      is_read = true,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE
+      user_id = $1
+      AND is_read = false
+    `,
+    [userId]
+  );
+
+
+  return true;
+}
+
+
+/**
+ * =========================================================
+ * DELETE ONE
+ * =========================================================
+ */
+export async function deleteNotification(
+  id,
+  userId
+) {
+
+  const result =
+    await db.query(
+      `
+      DELETE FROM notifications
+      WHERE
+        id = $1
+        AND user_id = $2
+      RETURNING *
+      `,
+      [
+        id,
+        userId,
+      ]
+    );
+
+
+  return result.rows[0] || null;
+}
+
+
+/**
+ * =========================================================
+ * DELETE ALL
+ * =========================================================
+ */
+export async function deleteAllNotifications(
+  userId
+) {
+
+  await db.query(
+    `
+    DELETE FROM notifications
+    WHERE user_id = $1
+    `,
+    [userId]
+  );
+
+
+  return true;
+}
+===== NOTIFICATION SERVICE =====
+
+// src/modules/notifications/notification.service.js
+
+import {
+  createNotification,
+  findNotificationsByUser,
+  findUnreadNotifications,
+  countUnreadNotifications,
+  markNotificationAsRead,
+  markAllNotificationsAsRead,
+  deleteNotification,
+  deleteAllNotifications,
+} from "./notification.repository.js";
+
+
+/**
+ * =========================================================
+ * WALLET FUNDING NOTIFICATION
+ * =========================================================
+ */
+export async function notifyWalletFunding({
+  userId,
+  amount,
+  balance,
+  reference,
+}) {
+
+  return await createNotification({
+
+    userId,
+
+    title:
+      "Wallet Funded",
+
+    message:
+      `Your wallet has been credited with ₦${Number(amount).toLocaleString(
+        "en-NG",
+        {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        }
+      )}. Your new balance is ₦${Number(balance).toLocaleString(
+        "en-NG",
+        {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        }
+      )}.`,
+
+    type:
+      "FUNDING",
+
+    isRead:
+      false,
+
+    metadata: {
+      service:
+        "WALLET_FUNDING",
+
+      reference,
+
+      amount:
+        Number(amount),
+
+      balance:
+        Number(balance),
+    },
+
+  });
+
+}
+
+
+/**
+ * =========================================================
+ * AIRTIME PURCHASE NOTIFICATION
+ * =========================================================
+ */
+export async function notifyAirtimePurchase({
+  userId,
+  amount,
+  network,
+  phoneNumber,
+  reference,
+  status = "SUCCESS",
+  refundReference = null,
+}) {
+
+  const successful =
+    status === "SUCCESS";
+
+
+  const title =
+    successful
+      ? "Airtime Purchase Successful"
+      : "Airtime Purchase Failed";
+
+
+  let message;
+
