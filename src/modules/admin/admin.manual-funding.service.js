@@ -1,25 +1,79 @@
 
-import { manuallyFundUser } from "./admin.manual-funding.repository.js";
+import {
+  manuallyFundUser,
+  manuallyDeductUser,
+} from "./admin.manual-funding.repository.js";
 
-export async function manualFundCustomer(userId, input, admin) {
-  const rawAmount = String(input?.amount ?? "").trim();
+// =========================================================
+// VALIDATE FUNDING AMOUNT
+// =========================================================
 
-  // Only accept positive amounts with up to two decimal places.
+function validateAmount(value, action = "Funding") {
+  const rawAmount = String(value ?? "").trim();
+
   if (!/^\d+(\.\d{1,2})?$/.test(rawAmount)) {
     const error = new Error(
-      "Enter a valid funding amount with no more than two decimal places."
+      `Enter a valid ${action.toLowerCase()} amount with no more than two decimal places.`
     );
     error.statusCode = 400;
     throw error;
   }
 
-  if (Number(rawAmount) <= 0 || !Number.isFinite(Number(rawAmount))) {
-    const error = new Error("Funding amount must be greater than zero.");
+  const numericAmount = Number(rawAmount);
+
+  if (
+    !Number.isFinite(numericAmount) ||
+    numericAmount <= 0
+  ) {
+    const error = new Error(
+      `${action} amount must be greater than zero.`
+    );
     error.statusCode = 400;
     throw error;
   }
 
-  const amount = Number(rawAmount).toFixed(2);
+  return numericAmount.toFixed(2);
+}
+
+// =========================================================
+// MANUAL CUSTOMER FUNDING
+// =========================================================
+
+export async function manualFundCustomer(userId, input, admin) {
+  const amount = validateAmount(input?.amount, "Funding");
 
   return manuallyFundUser(userId, amount, admin);
+}
+
+// =========================================================
+// MANUAL CUSTOMER DEDUCTION
+// =========================================================
+
+export async function manualDeductCustomer(userId, input, admin) {
+  const amount = validateAmount(input?.amount, "Deduction");
+
+  const reason = String(input?.reason ?? "").trim();
+
+  if (reason.length < 3) {
+    const error = new Error(
+      "Please provide a reason for this wallet deduction."
+    );
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (reason.length > 250) {
+    const error = new Error(
+      "The deduction reason cannot exceed 250 characters."
+    );
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return manuallyDeductUser(
+    userId,
+    amount,
+    admin,
+    reason
+  );
 }
