@@ -29,6 +29,7 @@
     "test": "echo \"No tests configured yet\""
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.119.0",
     "axios": "^1.19.0",
     "bcrypt": "^6.0.0",
     "cookie-parser": "^1.4.7",
@@ -41,6 +42,7 @@
     "jsonwebtoken": "^9.0.3",
     "knex": "^3.3.0",
     "morgan": "^1.11.0",
+    "multer": "^2.5.0",
     "node-pg-migrate": "^9.0.0",
     "pdf-lib": "^1.17.1",
     "pg": "^8.22.0",
