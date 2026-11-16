@@ -60,6 +60,9 @@ import adminRoutes
 import cableRoutes
   from "./modules/cable/cable.routes.js";
 
+// CUSTOMER SERVICES
+import servicesRoutes
+  from "./modules/services/services.routes.js";
 
 // =========================================================
 // CREATE EXPRESS APPLICATION
@@ -67,34 +70,14 @@ import cableRoutes
 
 const app = express();
 
-
 // =========================================================
 // SECURITY, CORS AND HTTP REQUEST LOGGING
-// =========================================================
-//
-// IMPORTANT:
-// Activate the security middleware before the routes.
-//
-// This enables CORS for browser-based clients such as
-// Expo Web running locally and the deployed Vercel site.
-//
-// It also enables Helmet security headers and Morgan
-// HTTP request logging through the existing middleware.
-//
 // =========================================================
 
 securityMiddleware(app);
 
-
 // =========================================================
 // GLOBAL JSON MIDDLEWARE
-// =========================================================
-//
-// Preserve the original raw request body because
-// payment-provider webhook signature verification may
-// require the exact request bytes.
-//
-// Keep this verify callback in place.
 // =========================================================
 
 app.use(
@@ -105,168 +88,114 @@ app.use(
   })
 );
 
-
 // =========================================================
 // CUSTOMER AUTHENTICATION
 // =========================================================
 
-app.use(
-  "/api/v1/auth",
-  authRoutes
-);
-
+app.use("/api/v1/auth", authRoutes);
 
 // =========================================================
 // ADMIN
 // =========================================================
 
-app.use(
-  "/api/v1/admin",
-  adminRoutes
-);
-
+app.use("/api/v1/admin", adminRoutes);
 
 // =========================================================
 // ACCOUNT
 // =========================================================
 
-app.use(
-  "/api/v1/accounts",
-  accountRoutes
-);
-
+app.use("/api/v1/accounts", accountRoutes);
 
 // =========================================================
 // PROFILE
 // =========================================================
 
-app.use(
-  "/api/v1/profile",
-  profileRoutes
-);
-
+app.use("/api/v1/profile", profileRoutes);
 
 // =========================================================
 // WALLET
 // =========================================================
 
-app.use(
-  "/api/v1/wallet",
-  walletRoutes
-);
-
+app.use("/api/v1/wallet", walletRoutes);
 
 // =========================================================
 // TRANSACTIONS
 // =========================================================
 
-app.use(
-  "/api/v1/transactions",
-  transactionRoutes
-);
-
+app.use("/api/v1/transactions", transactionRoutes);
 
 // =========================================================
 // FUNDING
 // =========================================================
 
-app.use(
-  "/api/v1/funding",
-  fundingRoutes
-);
-
+app.use("/api/v1/funding", fundingRoutes);
 
 // =========================================================
 // NOTIFICATIONS
 // =========================================================
 
-app.use(
-  "/api/v1/notifications",
-  notificationRoutes
-);
-
+app.use("/api/v1/notifications", notificationRoutes);
 
 // =========================================================
 // IDENTITY
 // =========================================================
 
-app.use(
-  "/api/v1/identity",
-  identityRoutes
-);
-
+app.use("/api/v1/identity", identityRoutes);
 
 // =========================================================
 // BVN
 // =========================================================
-//
-// Existing BVN routes:
-// GET  /api/v1/identity/bvn/service
-// POST /api/v1/identity/bvn
-// GET  /api/v1/identity/bvn/history
-// GET  /api/v1/identity/bvn/:id/download
-// GET  /api/v1/identity/bvn/:id
-//
-// =========================================================
 
-app.use(
-  "/api/v1/identity/bvn",
-  bvnRoutes
-);
-
+app.use("/api/v1/identity/bvn", bvnRoutes);
 
 // =========================================================
 // AIRTIME
 // =========================================================
 
-app.use(
-  "/api/v1/airtime",
-  airtimeRoutes
-);
-
+app.use("/api/v1/airtime", airtimeRoutes);
 
 // =========================================================
 // DATA
 // =========================================================
 
-app.use(
-  "/api/v1/data",
-  dataRoutes
-);
-
+app.use("/api/v1/data", dataRoutes);
 
 // =========================================================
 // INSTANTIPE WEBHOOK
 // =========================================================
-//
-// Keep the existing webhook route and raw-body capture.
-// =========================================================
 
-app.use(
-  "/api/v1/webhooks",
-  instantIPEWebhookRoutes
-);
-
+app.use("/api/v1/webhooks", instantIPEWebhookRoutes);
 
 // =========================================================
 // CABLE TV
 // =========================================================
 
-app.use(
-  "/api/v1/cable",
-  cableRoutes
-);
-
+app.use("/api/v1/cable", cableRoutes);
 
 // =========================================================
 // EDUCATION
 // =========================================================
 
-app.use(
-  "/api/v1/education",
-  educationRoutes
-);
+app.use("/api/v1/education", educationRoutes);
 
+// =========================================================
+// CUSTOMER SERVICES
+// =========================================================
+//
+// POST   /api/v1/services/requests/cac
+// GET    /api/v1/services/requests
+// GET    /api/v1/services/requests/:requestId
+// GET    /api/v1/services/requests/:requestId/documents/:documentId/download
+//
+// All customer service routes use authentication
+// configured inside services.routes.js.
+//
+// =========================================================
+
+app.use(
+  "/api/v1/services",
+  servicesRoutes
+);
 
 // =========================================================
 // HEALTH CHECK
@@ -279,7 +208,6 @@ app.get("/", (req, res) => {
   });
 });
 
-
 // =========================================================
 // 404 HANDLER
 // =========================================================
@@ -290,7 +218,6 @@ app.use((req, res) => {
     message: "Route not found",
   });
 });
-
 
 // =========================================================
 // EXPORT

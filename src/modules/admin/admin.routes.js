@@ -22,6 +22,17 @@ import {
   requireAdminRoles,
 } from "../../middleware/admin.middleware.js";
 
+import {
+  uploadAdminServiceDocuments,
+} from "../../middleware/document-upload.middleware.js";
+
+import {
+  listServiceRequests,
+  getServiceRequestDetails,
+  processServiceRequest,
+  uploadServiceDocuments,
+} from "../services/services.admin.controller.js";
+
 const router = express.Router();
 
 // =========================================================
@@ -104,6 +115,54 @@ router.post(
     "FINANCE"
   ),
   manualDeductUser
+);
+
+// =========================================================
+// SERVICE REQUEST MANAGEMENT
+// =========================================================
+
+router.get(
+  "/services/requests",
+  requireAdminRoles(
+    "SUPER_ADMIN",
+    "ADMIN",
+    "OPERATIONS",
+    "SUPPORT"
+  ),
+  listServiceRequests
+);
+
+router.get(
+  "/services/requests/:identifier",
+  requireAdminRoles(
+    "SUPER_ADMIN",
+    "ADMIN",
+    "OPERATIONS",
+    "SUPPORT"
+  ),
+  getServiceRequestDetails
+);
+
+router.patch(
+  "/services/requests/:identifier/status",
+  requireAdminRoles(
+    "SUPER_ADMIN",
+    "ADMIN",
+    "OPERATIONS"
+  ),
+  processServiceRequest
+);
+
+// Upload completed service documents and complete the request.
+router.post(
+  "/services/requests/:identifier/documents",
+  requireAdminRoles(
+    "SUPER_ADMIN",
+    "ADMIN",
+    "OPERATIONS"
+  ),
+  uploadAdminServiceDocuments,
+  uploadServiceDocuments
 );
 
 // =========================================================
