@@ -22,6 +22,20 @@ import {
   deletePrivateDocument,
 } from "../../services/supabase.storage.service.js";
 
+import {
+  findWalletForUpdateByUserId,
+  debitWallet,
+} from "../wallet/wallet.repository.js";
+
+import {
+  createTransaction,
+} from "../transactions/transaction.repository.js";
+
+import {
+  TRANSACTION_TYPES,
+  TRANSACTION_STATUS,
+} from "../transactions/transaction.constants.js";
+
 // =========================================================
 // ERROR HELPER
 // =========================================================
@@ -256,6 +270,28 @@ function validateCacDetails(details) {
 }
 
 // =========================================================
+// CAC REGISTRATION PRICING
+// =========================================================
+
+function getCacRegistrationFee(entityType) {
+  const prices = {
+    business: 29000,
+    ltd: 40000,
+    ngo: 95000,
+  };
+
+  const amount = prices[entityType];
+
+  if (!amount) {
+    throw serviceError(
+      "Unable to determine CAC registration fee."
+    );
+  }
+
+  return amount;
+}
+
+// =========================================================
 // GENERATE SERVICE REFERENCE
 // =========================================================
 
@@ -273,7 +309,7 @@ function generateReference() {
 }
 
 // =========================================================
-// SUBMIT CAC REQUEST
+// SUBMIT CAC REQUEST WITH WALLET PAYMENT
 // =========================================================
 
 export async function submitCacServiceRequest({
@@ -291,8 +327,10 @@ export async function submitCacServiceRequest({
 
   const details = parseDetails(body);
   const entityType = validateCacDetails(details);
-
   const personnel = details.personnel;
+
+  // Calculate fee on the backend.
+  const amount = getCacRegistrationFee(entityType);
 
   // Check all required documents before uploading.
   const documentsToUpload = [];
@@ -346,33 +384,89 @@ export async function submitCacServiceRequest({
   try {
     await client.query("BEGIN");
 
-    // Create request.
+    // -----------------------------------------------------
+    // LOCK CUSTOMER WALLET
+    // -----------------------------------------------------
+
+    const wallet = await findWalletForUpdateByUserId(
+      userId,
+      client
+    );
+
+    if (!wallet) {
+      throw serviceError(
+        "Wallet not found.",
+        404,
+        "WALLET_NOT_FOUND"
+      );
+    }
+
+    if (wallet.status !== "ACTIVE") {
+      throw serviceError(
+        "Your wallet is not active.",
+        403,
+        "WALLET_INACTIVE"
+      );
+    }
+
+    // -----------------------------------------------------
+    // CHECK AVAILABLE BALANCE
+    // -----------------------------------------------------
+
+    const balanceBefore = Number(
+      wallet.available_balance
+    );
+
+    if (!Number.isFinite(balanceBefore)) {
+      throw serviceError(
+        "Unable to verify wallet balance."
+      );
+    }
+
+    if (balanceBefore < amount) {
+      throw serviceError(
+        `Insufficient wallet balance. You need ₦${amount.toLocaleString("en-NG")} for this CAC registration.`,
+        400,
+        "INSUFFICIENT_BALANCE"
+      );
+    }
+
+    // -----------------------------------------------------
+    // CREATE CAC SERVICE REQUEST
+    // -----------------------------------------------------
+
     const request = await createServiceRequest(
       {
         userId,
         reference,
         serviceType: "CAC",
         entityType,
+
         details: {
           proposedNames: details.proposedNames,
           officeAddress: details.officeAddress,
           businessNature: details.businessNature,
           shareCapital: details.shareCapital ?? null,
+
           personnel: personnel.map((person) => ({
             fullName: String(person.fullName).trim(),
             nin: String(person.nin).trim(),
             role: String(person.role).trim(),
           })),
         },
-        amount: 0,
+
+        amount,
         currency: "NGN",
         status: "SUBMITTED",
-        paymentStatus: "PENDING",
+        paymentStatus: "PAID",
       },
       client
     );
 
-    // Upload private personnel documents.
+    // -----------------------------------------------------
+    // UPLOAD PRIVATE PERSONNEL DOCUMENTS
+    // -----------------------------------------------------
+
     for (const document of documentsToUpload) {
       const uploaded = await uploadPrivateDocument({
         buffer: document.file.buffer,
@@ -387,14 +481,17 @@ export async function submitCacServiceRequest({
           requestId: request.id,
           uploadedByUserId: userId,
           documentType: document.type,
+
           fileName: safeFileName(
             document.file.originalname
           ),
+
           mimeType: uploaded.mimeType,
           fileSize: uploaded.size,
           storageBucket: uploaded.bucket,
           storagePath: uploaded.path,
           visibility: "ADMIN",
+
           metadata: {
             personnelIndex: document.personIndex,
           },
@@ -403,22 +500,89 @@ export async function submitCacServiceRequest({
       );
     }
 
-    // Notify customer.
+    // -----------------------------------------------------
+    // DEBIT CUSTOMER WALLET
+    // -----------------------------------------------------
+
+    const updatedWallet = await debitWallet(
+      wallet.id,
+      amount,
+      client
+    );
+
+    if (!updatedWallet) {
+      throw serviceError(
+        "Unable to debit wallet. Please check your balance.",
+        400,
+        "WALLET_DEBIT_FAILED"
+      );
+    }
+
+    const balanceAfter = Number(
+      updatedWallet.available_balance
+    );
+
+    // -----------------------------------------------------
+    // CREATE PAYMENT TRANSACTION
+    // -----------------------------------------------------
+
+    const paymentTransaction = await createTransaction(
+      {
+        walletId: wallet.id,
+        reference,
+
+        type: TRANSACTION_TYPES.PAYMENT,
+
+        amount,
+        balanceBefore,
+        balanceAfter,
+
+        status: TRANSACTION_STATUS.SUCCESS,
+
+        description:
+          `CAC ${entityType.toUpperCase()} registration fee`,
+
+        metadata: {
+          service: "CAC",
+          serviceRequestId: request.id,
+          serviceReference: reference,
+          entityType,
+          currency: "NGN",
+        },
+      },
+      client
+    );
+
+    // -----------------------------------------------------
+    // NOTIFY CUSTOMER
+    // -----------------------------------------------------
+
     await createNotification(
       {
         userId,
         title: "CAC Registration Submitted",
-        message: `Your CAC registration request ${reference} has been submitted successfully and is awaiting processing.`,
+
+        message:
+          `Your CAC ${entityType.toUpperCase()} registration request has been submitted successfully. ₦${amount.toLocaleString("en-NG")} was debited from your wallet.`,
+
         type: "INFO",
+
         metadata: {
           serviceType: "CAC",
           requestId: request.id,
           reference,
+          amount,
+          paymentStatus: "PAID",
+          transactionId: paymentTransaction.id,
           status: "SUBMITTED",
         },
       },
       client
     );
+
+    // -----------------------------------------------------
+    // COMMIT DATABASE TRANSACTION
+    // -----------------------------------------------------
 
     await client.query("COMMIT");
 
@@ -429,17 +593,30 @@ export async function submitCacServiceRequest({
         serviceType: request.service_type,
         entityType: request.entity_type,
         status: request.status,
-        paymentStatus: request.payment_status,
-        amount: Number(request.amount),
+        paymentStatus: "PAID",
+        amount,
         submittedAt: request.submitted_at,
       },
+
+      transaction: {
+        id: paymentTransaction.id,
+        reference: paymentTransaction.reference,
+        type: paymentTransaction.type,
+        amount: Number(paymentTransaction.amount),
+        status: paymentTransaction.status,
+        balanceBefore,
+        balanceAfter,
+      },
+
       message:
-        "CAC registration request submitted successfully.",
+        "CAC registration submitted and payment successful.",
     };
+
   } catch (error) {
+    // Roll back request, debit and transaction.
     await client.query("ROLLBACK").catch(() => {});
 
-    // Remove uploaded files if request creation fails.
+    // Clean up uploaded documents if the operation fails.
     for (const objectPath of uploadedObjects) {
       try {
         await deletePrivateDocument(objectPath);
@@ -452,6 +629,7 @@ export async function submitCacServiceRequest({
     }
 
     throw error;
+
   } finally {
     client.release();
   }
@@ -511,7 +689,6 @@ export async function getCustomerServiceRequestDetails({
     );
   }
 
-  // Repository checks request ownership.
   const request = await findServiceRequestByUser(
     requestId,
     userId
@@ -525,7 +702,6 @@ export async function getCustomerServiceRequestDetails({
     );
   }
 
-  // Only CUSTOMER-visible documents are returned.
   const documents = await findCustomerServiceDocuments(
     request.id,
     userId
@@ -574,10 +750,6 @@ export async function getCustomerServiceDocumentDownload({
     );
   }
 
-  // This query checks:
-  // 1. The document belongs to the specified request.
-  // 2. The request belongs to the authenticated customer.
-  // 3. The document visibility is CUSTOMER.
   const document = await findCustomerServiceDocument(
     requestId,
     documentId,
@@ -606,6 +778,7 @@ export async function getCustomerServiceDocumentDownload({
       fileSize: Number(document.file_size),
       createdAt: document.created_at,
     },
+
     downloadUrl: signedUrl.url,
     downloadUrlExpiresIn: signedUrl.expiresIn,
   };
