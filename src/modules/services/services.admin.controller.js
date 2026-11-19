@@ -1,5 +1,8 @@
 
-import archiver from "archiver";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+const archiver = require("archiver");
 
 import {
   getAdminServiceRequests,
@@ -135,16 +138,15 @@ export async function downloadServiceRequestZip(req, res) {
       req.params.identifier
     );
 
+    if (!result || !Array.isArray(result.files) || result.files.length === 0) {
+      const error = new Error("No downloadable documents were found.");
+      error.statusCode = 404;
+      throw error;
+    }
+
     const safeReference = String(
       result.reference || "service-request"
     ).replace(/[^a-zA-Z0-9_-]/g, "_");
-
-    res.status(200);
-    res.setHeader("Content-Type", "application/zip");
-    res.setHeader(
-      "Content-Disposition",
-      `attachment; filename="${safeReference}_documents.zip"`
-    );
 
     const archive = archiver("zip", {
       zlib: { level: 6 },
@@ -152,12 +154,23 @@ export async function downloadServiceRequestZip(req, res) {
 
     archive.on("warning", (error) => {
       console.warn("ZIP archive warning:", error);
+
+      if (error.code !== "ENOENT") {
+        res.destroy(error);
+      }
     });
 
     archive.on("error", (error) => {
       console.error("ZIP archive error:", error);
       res.destroy(error);
     });
+
+    res.status(200);
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${safeReference}_documents.zip"`
+    );
 
     archive.pipe(res);
 
