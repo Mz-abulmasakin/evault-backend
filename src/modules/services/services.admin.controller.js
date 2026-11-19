@@ -1,19 +1,28 @@
 
+import archiver from "archiver";
+
 import {
   getAdminServiceRequests,
   getAdminServiceRequestDetails,
   processAdminServiceRequest,
   uploadCompletedServiceDocuments,
+  getAdminServiceRequestZip,
 } from "./services.admin.service.js";
+
+// =========================================================
+// ERROR HANDLER
+// =========================================================
 
 function sendError(res, error, fallbackMessage) {
   console.error(fallbackMessage, error);
 
+  if (res.headersSent) {
+    return res.destroy(error);
+  }
+
   return res.status(error.statusCode || 500).json({
     success: false,
-    message: error.statusCode
-      ? error.message
-      : fallbackMessage,
+    message: error.statusCode ? error.message : fallbackMessage,
   });
 }
 
@@ -23,20 +32,17 @@ function sendError(res, error, fallbackMessage) {
 
 export async function listServiceRequests(req, res) {
   try {
-    const result = await getAdminServiceRequests(
-      req.query || {}
-    );
+    const result = await getAdminServiceRequests(req.query);
 
     return res.status(200).json({
       success: true,
-      message: "Service requests retrieved successfully.",
       ...result,
     });
   } catch (error) {
     return sendError(
       res,
       error,
-      "Failed to retrieve service requests."
+      "Unable to retrieve service requests."
     );
   }
 }
@@ -47,26 +53,25 @@ export async function listServiceRequests(req, res) {
 
 export async function getServiceRequestDetails(req, res) {
   try {
-    const request = await getAdminServiceRequestDetails(
+    const result = await getAdminServiceRequestDetails(
       req.params.identifier
     );
 
     return res.status(200).json({
       success: true,
-      message: "Service request retrieved successfully.",
-      data: request,
+      data: result,
     });
   } catch (error) {
     return sendError(
       res,
       error,
-      "Failed to retrieve service request."
+      "Unable to retrieve service request details."
     );
   }
 }
 
 // =========================================================
-// PROCESS SERVICE REQUEST
+// UPDATE SERVICE REQUEST STATUS
 // =========================================================
 
 export async function processServiceRequest(req, res) {
@@ -81,14 +86,14 @@ export async function processServiceRequest(req, res) {
 
     return res.status(200).json({
       success: true,
-      message: "Service request status updated successfully.",
+      message: "Service request updated successfully.",
       data: result,
     });
   } catch (error) {
     return sendError(
       res,
       error,
-      "Failed to update service request."
+      "Unable to update service request."
     );
   }
 }
@@ -108,14 +113,66 @@ export async function uploadServiceDocuments(req, res) {
 
     return res.status(200).json({
       success: true,
-      message: result.message,
+      message: "Service documents uploaded successfully.",
       data: result,
     });
   } catch (error) {
     return sendError(
       res,
       error,
-      "Failed to upload completed service documents."
+      "Unable to upload service documents."
+    );
+  }
+}
+
+// =========================================================
+// DOWNLOAD SERVICE REQUEST DOCUMENTS AS ZIP
+// =========================================================
+
+export async function downloadServiceRequestZip(req, res) {
+  try {
+    const result = await getAdminServiceRequestZip(
+      req.params.identifier
+    );
+
+    const safeReference = String(
+      result.reference || "service-request"
+    ).replace(/[^a-zA-Z0-9_-]/g, "_");
+
+    res.status(200);
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${safeReference}_documents.zip"`
+    );
+
+    const archive = archiver("zip", {
+      zlib: { level: 6 },
+    });
+
+    archive.on("warning", (error) => {
+      console.warn("ZIP archive warning:", error);
+    });
+
+    archive.on("error", (error) => {
+      console.error("ZIP archive error:", error);
+      res.destroy(error);
+    });
+
+    archive.pipe(res);
+
+    for (const file of result.files) {
+      archive.append(file.buffer, {
+        name: file.name,
+      });
+    }
+
+    await archive.finalize();
+  } catch (error) {
+    return sendError(
+      res,
+      error,
+      "Unable to download service request documents."
     );
   }
 }

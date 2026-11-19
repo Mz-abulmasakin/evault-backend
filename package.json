@@ -30,6 +30,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.119.0",
+    "archiver": "^8.0.0",
     "axios": "^1.19.0",
     "bcrypt": "^6.0.0",
     "cookie-parser": "^1.4.7",

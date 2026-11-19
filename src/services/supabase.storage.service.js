@@ -1,11 +1,9 @@
-
 import { randomUUID } from "node:crypto";
-import path from "node:path";
 import env from "../config/env.js";
 import { getSupabase } from "../config/supabase.js";
 
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
-const SIGNED_URL_EXPIRY = 10 * 60; // 10 minutes
+const MAX_FILE_SIZE = 10 * 1024 * 1024;
+const SIGNED_URL_EXPIRY = 10 * 60;
 
 const ALLOWED_TYPES = {
   "image/jpeg": ".jpg",
@@ -49,6 +47,21 @@ function cleanFolder(folder) {
   return segments.join("/");
 }
 
+function validateStoragePath(objectPath) {
+  if (
+    typeof objectPath !== "string" ||
+    !objectPath.trim() ||
+    objectPath.includes("..") ||
+    objectPath.startsWith("/")
+  ) {
+    throw new Error("Invalid document storage path.");
+  }
+}
+
+// =========================================================
+// UPLOAD PRIVATE DOCUMENT
+// =========================================================
+
 export async function uploadPrivateDocument({
   buffer,
   mimeType,
@@ -87,15 +100,12 @@ export async function uploadPrivateDocument({
   };
 }
 
+// =========================================================
+// CREATE PRIVATE DOCUMENT URL
+// =========================================================
+
 export async function createPrivateDocumentUrl(objectPath) {
-  if (
-    typeof objectPath !== "string" ||
-    !objectPath.trim() ||
-    objectPath.includes("..") ||
-    objectPath.startsWith("/")
-  ) {
-    throw new Error("Invalid document storage path.");
-  }
+  validateStoragePath(objectPath);
 
   const supabase = getSupabase();
 
@@ -113,15 +123,44 @@ export async function createPrivateDocumentUrl(objectPath) {
   };
 }
 
-export async function deletePrivateDocument(objectPath) {
-  if (
-    typeof objectPath !== "string" ||
-    !objectPath.trim() ||
-    objectPath.includes("..") ||
-    objectPath.startsWith("/")
-  ) {
-    throw new Error("Invalid document storage path.");
+// =========================================================
+// DOWNLOAD PRIVATE DOCUMENT AS BUFFER
+// =========================================================
+
+export async function downloadPrivateDocument(
+  objectPath,
+  bucketName = null
+) {
+  validateStoragePath(objectPath);
+
+  const supabase = getSupabase();
+  const bucket = bucketName || env.storage.supabaseBucket;
+
+  if (!bucket) {
+    throw new Error("Supabase storage bucket is not configured.");
   }
+
+  const { data, error } = await supabase.storage
+    .from(bucket)
+    .download(objectPath);
+
+  if (error) {
+    throw new Error(`Document download failed: ${error.message}`);
+  }
+
+  if (!data) {
+    throw new Error("The requested document was not found.");
+  }
+
+  return Buffer.from(await data.arrayBuffer());
+}
+
+// =========================================================
+// DELETE PRIVATE DOCUMENT
+// =========================================================
+
+export async function deletePrivateDocument(objectPath) {
+  validateStoragePath(objectPath);
 
   const supabase = getSupabase();
 

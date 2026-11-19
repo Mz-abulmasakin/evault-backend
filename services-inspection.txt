@@ -1,0 +1,2049 @@
+
+C:\Users\SON\evault-backend>(echo.   & echo ========== src\modules\services\services.routes.js ==========   & type "src\modules\services\services.routes.js" ) 
+ 
+========== src\modules\services\services.routes.js ========== 
+
+import express from "express";
+
+import { authMiddleware } from "../../middleware/auth.middleware.js";
+
+import {
+  uploadCacPersonnelDocuments,
+} from "../../middleware/document-upload.middleware.js";
+
+import {
+  submitCacRequestController,
+  listCustomerServiceRequests,
+  getCustomerServiceRequestController,
+  getCustomerServiceDocumentController,
+} from "./services.controller.js";
+
+const router = express.Router();
+
+// All customer service endpoints require authentication
+router.use(authMiddleware);
+
+// =========================================================
+// SUBMIT CAC SERVICE REQUEST
+// POST /requests/cac
+// =========================================================
+
+router.post(
+  "/requests/cac",
+  uploadCacPersonnelDocuments,
+  submitCacRequestController
+);
+
+// =========================================================
+// LIST CUSTOMER SERVICE REQUESTS
+// GET /requests
+// =========================================================
+
+router.get(
+  "/requests",
+  listCustomerServiceRequests
+);
+
+// =========================================================
+// GET ONE CUSTOMER SERVICE REQUEST
+// GET /requests/:requestId
+// =========================================================
+
+router.get(
+  "/requests/:requestId",
+  getCustomerServiceRequestController
+);
+
+// =========================================================
+// DOWNLOAD CUSTOMER-VISIBLE DOCUMENT
+// GET /requests/:requestId/documents/:documentId/download
+// =========================================================
+
+router.get(
+  "/requests/:requestId/documents/:documentId/download",
+  getCustomerServiceDocumentController
+);
+
+export default router;
+
+C:\Users\SON\evault-backend>(echo.   & echo ========== src\modules\services\services.controller.js ==========   & type "src\modules\services\services.controller.js" ) 
+ 
+========== src\modules\services\services.controller.js ========== 
+
+import {
+  submitCacServiceRequest,
+  getCustomerServiceRequests,
+  getCustomerServiceRequestDetails,
+  getCustomerServiceDocumentDownload,
+} from "./services.service.js";
+
+// =========================================================
+// GET AUTHENTICATED CUSTOMER ID
+// =========================================================
+
+function getUserId(req) {
+  return (
+    req?.user?.id ||
+    req?.user?.userId ||
+    req?.auth?.userId ||
+    req?.auth?.id ||
+    null
+  );
+}
+
+// =========================================================
+// ERROR RESPONSE
+// =========================================================
+
+function sendError(res, error, fallbackMessage) {
+  console.error("CUSTOMER SERVICES ERROR:", error);
+
+  const status =
+    Number(error?.status || error?.statusCode) || 500;
+
+  return res.status(status).json({
+    success: false,
+    message: error?.message || fallbackMessage,
+    code: error?.code || "SERVICE_REQUEST_FAILED",
+  });
+}
+
+// =========================================================
+// SUBMIT CAC REQUEST
+// =========================================================
+
+export async function submitCacRequestController(req, res) {
+  try {
+    const userId = getUserId(req);
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication required.",
+      });
+    }
+
+    const result = await submitCacServiceRequest({
+      userId,
+      body: req.body,
+      files: req.files || {},
+    });
+
+    return res.status(201).json({
+      success: true,
+      ...result,
+    });
+  } catch (error) {
+    return sendError(
+      res,
+      error,
+      "Failed to submit CAC registration request."
+    );
+  }
+}
+
+// =========================================================
+// LIST CUSTOMER SERVICE REQUESTS
+// =========================================================
+
+export async function listCustomerServiceRequests(req, res) {
+  try {
+    const userId = getUserId(req);
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication required.",
+      });
+    }
+
+    const result = await getCustomerServiceRequests({
+      userId,
+      limit: req.query.limit,
+      offset: req.query.offset,
+    });
+
+    return res.status(200).json({
+      success: true,
+      ...result,
+    });
+  } catch (error) {
+    return sendError(
+      res,
+      error,
+      "Failed to load your service requests."
+    );
+  }
+}
+
+// =========================================================
+// GET ONE CUSTOMER SERVICE REQUEST
+// =========================================================
+
+export async function getCustomerServiceRequestController(req, res) {
+  try {
+    const userId = getUserId(req);
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication required.",
+      });
+    }
+
+    const result = await getCustomerServiceRequestDetails({
+      userId,
+      requestId: req.params.requestId,
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    return sendError(
+      res,
+      error,
+      "Failed to load service request details."
+    );
+  }
+}
+
+// =========================================================
+// GET CUSTOMER DOCUMENT DOWNLOAD LINK
+// =========================================================
+
+export async function getCustomerServiceDocumentController(req, res) {
+  try {
+    const userId = getUserId(req);
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication required.",
+      });
+    }
+
+    const result = await getCustomerServiceDocumentDownload({
+      userId,
+      requestId: req.params.requestId,
+      documentId: req.params.documentId,
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    return sendError(
+      res,
+      error,
+      "Failed to generate document download link."
+    );
+  }
+}
+
+C:\Users\SON\evault-backend>(echo.   & echo ========== src\modules\services\services.repository.js ==========   & type "src\modules\services\services.repository.js" ) 
+ 
+========== src\modules\services\services.repository.js ========== 
+
+import db from "../../config/database.js";
+
+// =========================================================
+// CREATE SERVICE REQUEST
+// =========================================================
+
+export async function createServiceRequest(
+  data,
+  client = db
+) {
+  const {
+    userId,
+    reference,
+    serviceType,
+    entityType = null,
+    details = {},
+    amount = 0,
+    currency = "NGN",
+    status = "SUBMITTED",
+    paymentStatus = "PENDING",
+  } = data;
+
+  const result = await client.query(
+    `
+    INSERT INTO service_requests (
+      user_id,
+      reference,
+      service_type,
+      entity_type,
+      details,
+      amount,
+      currency,
+      status,
+      payment_status
+    )
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    RETURNING *
+    `,
+    [
+      userId,
+      reference,
+      serviceType,
+      entityType,
+      JSON.stringify(details),
+      amount,
+      currency,
+      status,
+      paymentStatus,
+    ]
+  );
+
+  return result.rows[0];
+}
+
+// =========================================================
+// SAVE SERVICE REQUEST DOCUMENT
+// =========================================================
+
+export async function createServiceRequestDocument(
+  data,
+  client = db
+) {
+  const {
+    requestId,
+    uploadedByUserId = null,
+    uploadedByAdminId = null,
+    documentType,
+    fileName,
+    mimeType,
+    fileSize,
+    storageBucket,
+    storagePath,
+    visibility = "CUSTOMER",
+    metadata = {},
+  } = data;
+
+  const result = await client.query(
+    `
+    INSERT INTO service_request_documents (
+      request_id,
+      uploaded_by_user_id,
+      uploaded_by_admin_id,
+      document_type,
+      file_name,
+      mime_type,
+      file_size,
+      storage_bucket,
+      storage_path,
+      visibility,
+      metadata
+    )
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+    RETURNING *
+    `,
+    [
+      requestId,
+      uploadedByUserId,
+      uploadedByAdminId,
+      documentType,
+      fileName,
+      mimeType,
+      fileSize,
+      storageBucket,
+      storagePath,
+      visibility,
+      JSON.stringify(metadata),
+    ]
+  );
+
+  return result.rows[0];
+}
+
+// =========================================================
+// FIND CUSTOMER REQUEST
+// =========================================================
+
+export async function findServiceRequestByUser(
+  requestId,
+  userId,
+  client = db
+) {
+  const result = await client.query(
+    `
+    SELECT *
+    FROM service_requests
+    WHERE id = $1
+      AND user_id = $2
+    LIMIT 1
+    `,
+    [requestId, userId]
+  );
+
+  return result.rows[0] || null;
+}
+
+// =========================================================
+// LIST CUSTOMER REQUESTS
+// =========================================================
+
+export async function findServiceRequestsByUser(
+  userId,
+  limit = 50,
+  offset = 0,
+  client = db
+) {
+  const result = await client.query(
+    `
+    SELECT *
+    FROM service_requests
+    WHERE user_id = $1
+    ORDER BY created_at DESC
+    LIMIT $2
+    OFFSET $3
+    `,
+    [
+      userId,
+      limit,
+      offset,
+    ]
+  );
+
+  return result.rows;
+}
+
+// =========================================================
+// FIND CUSTOMER-VISIBLE DOCUMENT
+// =========================================================
+
+export async function findCustomerServiceDocument(
+  requestId,
+  documentId,
+  userId,
+  client = db
+) {
+  const result = await client.query(
+    `
+    SELECT
+      d.*
+    FROM service_request_documents d
+    INNER JOIN service_requests r
+      ON r.id = d.request_id
+    WHERE d.id = $1
+      AND d.request_id = $2
+      AND r.user_id = $3
+      AND d.visibility = 'CUSTOMER'
+    LIMIT 1
+    `,
+    [
+      documentId,
+      requestId,
+      userId,
+    ]
+  );
+
+  return result.rows[0] || null;
+}
+
+// =========================================================
+// LIST CUSTOMER-VISIBLE DOCUMENTS
+// =========================================================
+
+export async function findCustomerServiceDocuments(
+  requestId,
+  userId,
+  client = db
+) {
+  const result = await client.query(
+    `
+    SELECT
+      d.id,
+      d.request_id,
+      d.document_type,
+      d.file_name,
+      d.mime_type,
+      d.file_size,
+      d.storage_path,
+      d.created_at
+    FROM service_request_documents d
+    INNER JOIN service_requests r
+      ON r.id = d.request_id
+    WHERE d.request_id = $1
+      AND r.user_id = $2
+      AND d.visibility = 'CUSTOMER'
+    ORDER BY d.created_at DESC
+    `,
+    [
+      requestId,
+      userId,
+    ]
+  );
+
+  return result.rows;
+}
+
+C:\Users\SON\evault-backend>(echo.   & echo ========== src\modules\services\services.service.js ==========   & type "src\modules\services\services.service.js" ) 
+ 
+========== src\modules\services\services.service.js ========== 
+
+import { randomBytes } from "node:crypto";
+
+import db from "../../config/database.js";
+
+import {
+  createServiceRequest,
+  createServiceRequestDocument,
+  findServiceRequestByUser,
+  findServiceRequestsByUser,
+  findCustomerServiceDocument,
+  findCustomerServiceDocuments,
+} from "./services.repository.js";
+
+import {
+  createNotification,
+} from "../notification/notification.repository.js";
+
+import {
+  uploadPrivateDocument,
+  createPrivateDocumentUrl,
+  deletePrivateDocument,
+} from "../../services/supabase.storage.service.js";
+
+import {
+  findWalletForUpdateByUserId,
+  debitWallet,
+} from "../wallet/wallet.repository.js";
+
+import {
+  createTransaction,
+} from "../transactions/transaction.repository.js";
+
+import {
+  TRANSACTION_TYPES,
+  TRANSACTION_STATUS,
+} from "../transactions/transaction.constants.js";
+
+// =========================================================
+// ERROR HELPER
+// =========================================================
+
+function serviceError(
+  message,
+  status = 400,
+  code = "SERVICE_REQUEST_ERROR"
+) {
+  const error = new Error(message);
+  error.status = status;
+  error.statusCode = status;
+  error.code = code;
+  return error;
+}
+
+// =========================================================
+// CUSTOMER AUTHENTICATION VALIDATION
+// =========================================================
+
+function validateUserId(userId) {
+  if (!userId) {
+    throw serviceError(
+      "Authenticated user is required.",
+      401,
+      "USER_ID_REQUIRED"
+    );
+  }
+}
+
+// =========================================================
+// PARSE REQUEST DETAILS
+// =========================================================
+
+function parseDetails(body = {}) {
+  let details = body.details ?? body;
+
+  if (typeof details === "string") {
+    try {
+      details = JSON.parse(details);
+    } catch {
+      throw serviceError("Invalid service request details.");
+    }
+  }
+
+  if (
+    !details ||
+    typeof details !== "object" ||
+    Array.isArray(details)
+  ) {
+    throw serviceError(
+      "Valid service request details are required."
+    );
+  }
+
+  let personnel = details.personnel;
+
+  if (typeof personnel === "string") {
+    try {
+      personnel = JSON.parse(personnel);
+    } catch {
+      throw serviceError("Invalid personnel information.");
+    }
+  }
+
+  if (!Array.isArray(personnel)) {
+    throw serviceError(
+      "Personnel information is required."
+    );
+  }
+
+  return {
+    ...details,
+    personnel,
+  };
+}
+
+// =========================================================
+// VALIDATE IMAGE CONTENT
+// =========================================================
+
+function validateImageFile(file, label) {
+  if (
+    !file ||
+    !Buffer.isBuffer(file.buffer) ||
+    file.buffer.length === 0
+  ) {
+    throw serviceError(`${label} is required.`);
+  }
+
+  if (file.buffer.length > 10 * 1024 * 1024) {
+    throw serviceError(
+      `${label} must not exceed 10 MB.`
+    );
+  }
+
+  const buffer = file.buffer;
+
+  const isJpeg =
+    buffer.length >= 3 &&
+    buffer[0] === 0xff &&
+    buffer[1] === 0xd8 &&
+    buffer[2] === 0xff;
+
+  const isPng =
+    buffer.length >= 8 &&
+    buffer.subarray(0, 8).equals(
+      Buffer.from([
+        137, 80, 78, 71,
+        13, 10, 26, 10,
+      ])
+    );
+
+  if (!isJpeg && !isPng) {
+    throw serviceError(
+      `${label} must be a valid JPEG or PNG image.`
+    );
+  }
+
+  const actualMime = isJpeg
+    ? "image/jpeg"
+    : "image/png";
+
+  if (file.mimetype !== actualMime) {
+    throw serviceError(
+      `${label} file type does not match its actual contents.`
+    );
+  }
+
+  return actualMime;
+}
+
+// =========================================================
+// SANITIZE FILE NAME
+// =========================================================
+
+function safeFileName(name) {
+  return String(name || "document")
+    .replace(/[^a-zA-Z0-9._-]/g, "_")
+    .slice(0, 180);
+}
+
+// =========================================================
+// VALIDATE CAC INFORMATION
+// =========================================================
+
+function validateCacDetails(details) {
+  const entityType = String(details.entityType || "")
+    .trim()
+    .toLowerCase();
+
+  const supportedTypes = [
+    "business",
+    "ltd",
+    "ngo",
+  ];
+
+  if (!supportedTypes.includes(entityType)) {
+    throw serviceError("Invalid CAC entity type.");
+  }
+
+  const proposedNames = Array.isArray(details.proposedNames)
+    ? details.proposedNames
+    : [];
+
+  const requiredNames = entityType === "ngo" ? 3 : 2;
+
+  if (
+    proposedNames.filter(
+      (name) =>
+        typeof name === "string" && name.trim()
+    ).length < requiredNames
+  ) {
+    throw serviceError(
+      `Please provide at least ${requiredNames} proposed names.`
+    );
+  }
+
+  if (!String(details.officeAddress || "").trim()) {
+    throw serviceError("Office address is required.");
+  }
+
+  if (!String(details.businessNature || "").trim()) {
+    throw serviceError("Business nature is required.");
+  }
+
+  if (entityType === "ltd") {
+    const capital = Number(details.shareCapital);
+
+    if (!Number.isFinite(capital) || capital < 1000000) {
+      throw serviceError(
+        "Limited liability company share capital must be at least ₦1,000,000."
+      );
+    }
+  }
+
+  const minimumPersonnel = entityType === "business" ? 1 : 2;
+
+  if (details.personnel.length < minimumPersonnel) {
+    throw serviceError(
+      `At least ${minimumPersonnel} personnel record(s) are required.`
+    );
+  }
+
+  if (details.personnel.length > 10) {
+    throw serviceError(
+      "A maximum of 10 personnel records is allowed."
+    );
+  }
+
+  details.personnel.forEach((person, index) => {
+    if (!String(person.fullName || "").trim()) {
+      throw serviceError(
+        `Personnel ${index + 1}: full name is required.`
+      );
+    }
+
+    if (!/^\d{11}$/.test(String(person.nin || "").trim())) {
+      throw serviceError(
+        `Personnel ${index + 1}: valid 11-digit NIN is required.`
+      );
+    }
+
+    if (!String(person.role || "").trim()) {
+      throw serviceError(
+        `Personnel ${index + 1}: role is required.`
+      );
+    }
+  });
+
+  return entityType;
+}
+
+// =========================================================
+// CAC REGISTRATION PRICING
+// =========================================================
+
+function getCacRegistrationFee(entityType) {
+  const prices = {
+    business: 29000,
+    ltd: 40000,
+    ngo: 95000,
+  };
+
+  const amount = prices[entityType];
+
+  if (!amount) {
+    throw serviceError(
+      "Unable to determine CAC registration fee."
+    );
+  }
+
+  return amount;
+}
+
+// =========================================================
+// GENERATE SERVICE REFERENCE
+// =========================================================
+
+function generateReference() {
+  const date = new Date()
+    .toISOString()
+    .slice(0, 10)
+    .replace(/-/g, "");
+
+  const random = randomBytes(4)
+    .toString("hex")
+    .toUpperCase();
+
+  return `EVS-CAC-${date}-${random}`;
+}
+
+// =========================================================
+// SUBMIT CAC REQUEST WITH WALLET PAYMENT
+// =========================================================
+
+export async function submitCacServiceRequest({
+  userId,
+  body,
+  files = {},
+}) {
+  if (!userId) {
+    throw serviceError(
+      "Authenticated user is required.",
+      401,
+      "USER_ID_REQUIRED"
+    );
+  }
+
+  const details = parseDetails(body);
+  const entityType = validateCacDetails(details);
+  const personnel = details.personnel;
+
+  // Calculate fee on the backend.
+  const amount = getCacRegistrationFee(entityType);
+
+  // Check all required documents before uploading.
+  const documentsToUpload = [];
+
+  personnel.forEach((person, index) => {
+    const passportField = `personnel_${index}_passport`;
+    const signatureField = `personnel_${index}_signature`;
+
+    const passport = files[passportField]?.[0];
+    const signature = files[signatureField]?.[0];
+
+    if (!passport) {
+      throw serviceError(
+        `Passport photograph is missing for personnel ${index + 1}.`
+      );
+    }
+
+    if (!signature) {
+      throw serviceError(
+        `Signature is missing for personnel ${index + 1}.`
+      );
+    }
+
+    documentsToUpload.push({
+      file: passport,
+      type: `PERSONNEL_${index + 1}_PASSPORT`,
+      label: `Personnel ${index + 1} passport`,
+      personIndex: index,
+    });
+
+    documentsToUpload.push({
+      file: signature,
+      type: `PERSONNEL_${index + 1}_SIGNATURE`,
+      label: `Personnel ${index + 1} signature`,
+      personIndex: index,
+    });
+  });
+
+  // Validate image contents before database or storage work.
+  for (const document of documentsToUpload) {
+    document.mimeType = validateImageFile(
+      document.file,
+      document.label
+    );
+  }
+
+  const reference = generateReference();
+  const uploadedObjects = [];
+  const client = await db.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    // -----------------------------------------------------
+    // LOCK CUSTOMER WALLET
+    // -----------------------------------------------------
+
+    const wallet = await findWalletForUpdateByUserId(
+      userId,
+      client
+    );
+
+    if (!wallet) {
+      throw serviceError(
+        "Wallet not found.",
+        404,
+        "WALLET_NOT_FOUND"
+      );
+    }
+
+    if (wallet.status !== "ACTIVE") {
+      throw serviceError(
+        "Your wallet is not active.",
+        403,
+        "WALLET_INACTIVE"
+      );
+    }
+
+    // -----------------------------------------------------
+    // CHECK AVAILABLE BALANCE
+    // -----------------------------------------------------
+
+    const balanceBefore = Number(
+      wallet.available_balance
+    );
+
+    if (!Number.isFinite(balanceBefore)) {
+      throw serviceError(
+        "Unable to verify wallet balance."
+      );
+    }
+
+    if (balanceBefore < amount) {
+      throw serviceError(
+        `Insufficient wallet balance. You need ₦${amount.toLocaleString("en-NG")} for this CAC registration.`,
+        400,
+        "INSUFFICIENT_BALANCE"
+      );
+    }
+
+    // -----------------------------------------------------
+    // CREATE CAC SERVICE REQUEST
+    // -----------------------------------------------------
+
+    const request = await createServiceRequest(
+      {
+        userId,
+        reference,
+        serviceType: "CAC",
+        entityType,
+
+        details: {
+          proposedNames: details.proposedNames,
+          officeAddress: details.officeAddress,
+          businessNature: details.businessNature,
+          shareCapital: details.shareCapital ?? null,
+
+          personnel: personnel.map((person) => ({
+            fullName: String(person.fullName).trim(),
+            nin: String(person.nin).trim(),
+            role: String(person.role).trim(),
+          })),
+        },
+
+        amount,
+        currency: "NGN",
+        status: "SUBMITTED",
+        paymentStatus: "PAID",
+      },
+      client
+    );
+
+    // -----------------------------------------------------
+    // UPLOAD PRIVATE PERSONNEL DOCUMENTS
+    // -----------------------------------------------------
+
+    for (const document of documentsToUpload) {
+      const uploaded = await uploadPrivateDocument({
+        buffer: document.file.buffer,
+        mimeType: document.mimeType,
+        folder: `service-requests/${request.id}`,
+      });
+
+      uploadedObjects.push(uploaded.path);
+
+      await createServiceRequestDocument(
+        {
+          requestId: request.id,
+          uploadedByUserId: userId,
+          documentType: document.type,
+
+          fileName: safeFileName(
+            document.file.originalname
+          ),
+
+          mimeType: uploaded.mimeType,
+          fileSize: uploaded.size,
+          storageBucket: uploaded.bucket,
+          storagePath: uploaded.path,
+          visibility: "ADMIN",
+
+          metadata: {
+            personnelIndex: document.personIndex,
+          },
+        },
+        client
+      );
+    }
+
+    // -----------------------------------------------------
+    // DEBIT CUSTOMER WALLET
+    // -----------------------------------------------------
+
+    const updatedWallet = await debitWallet(
+      wallet.id,
+      amount,
+      client
+    );
+
+    if (!updatedWallet) {
+      throw serviceError(
+        "Unable to debit wallet. Please check your balance.",
+        400,
+        "WALLET_DEBIT_FAILED"
+      );
+    }
+
+    const balanceAfter = Number(
+      updatedWallet.available_balance
+    );
+
+    // -----------------------------------------------------
+    // CREATE PAYMENT TRANSACTION
+    // -----------------------------------------------------
+
+    const paymentTransaction = await createTransaction(
+      {
+        walletId: wallet.id,
+        reference,
+
+        type: TRANSACTION_TYPES.PAYMENT,
+
+        amount,
+        balanceBefore,
+        balanceAfter,
+
+        status: TRANSACTION_STATUS.SUCCESS,
+
+        description:
+          `CAC ${entityType.toUpperCase()} registration fee`,
+
+        metadata: {
+          service: "CAC",
+          serviceRequestId: request.id,
+          serviceReference: reference,
+          entityType,
+          currency: "NGN",
+        },
+      },
+      client
+    );
+
+    // -----------------------------------------------------
+    // NOTIFY CUSTOMER
+    // -----------------------------------------------------
+
+    await createNotification(
+      {
+        userId,
+        title: "CAC Registration Submitted",
+
+        message:
+          `Your CAC ${entityType.toUpperCase()} registration request has been submitted successfully. ₦${amount.toLocaleString("en-NG")} was debited from your wallet.`,
+
+        type: "INFO",
+
+        metadata: {
+          serviceType: "CAC",
+          requestId: request.id,
+          reference,
+          amount,
+          paymentStatus: "PAID",
+          transactionId: paymentTransaction.id,
+          status: "SUBMITTED",
+        },
+      },
+      client
+    );
+
+    // -----------------------------------------------------
+    // COMMIT DATABASE TRANSACTION
+    // -----------------------------------------------------
+
+    await client.query("COMMIT");
+
+    return {
+      request: {
+        id: request.id,
+        reference: request.reference,
+        serviceType: request.service_type,
+        entityType: request.entity_type,
+        status: request.status,
+        paymentStatus: "PAID",
+        amount,
+        submittedAt: request.submitted_at,
+      },
+
+      transaction: {
+        id: paymentTransaction.id,
+        reference: paymentTransaction.reference,
+        type: paymentTransaction.type,
+        amount: Number(paymentTransaction.amount),
+        status: paymentTransaction.status,
+        balanceBefore,
+        balanceAfter,
+      },
+
+      message:
+        "CAC registration submitted and payment successful.",
+    };
+
+  } catch (error) {
+    // Roll back request, debit and transaction.
+    await client.query("ROLLBACK").catch(() => {});
+
+    // Clean up uploaded documents if the operation fails.
+    for (const objectPath of uploadedObjects) {
+      try {
+        await deletePrivateDocument(objectPath);
+      } catch (cleanupError) {
+        console.error(
+          "CAC DOCUMENT CLEANUP ERROR:",
+          cleanupError.message
+        );
+      }
+    }
+
+    throw error;
+
+  } finally {
+    client.release();
+  }
+}
+
+// =========================================================
+// CUSTOMER: LIST SERVICE REQUESTS
+// =========================================================
+
+export async function getCustomerServiceRequests({
+  userId,
+  limit = 50,
+  offset = 0,
+}) {
+  validateUserId(userId);
+
+  const safeLimit = Math.min(
+    Math.max(Number.parseInt(limit, 10) || 50, 1),
+    100
+  );
+
+  const safeOffset = Math.max(
+    Number.parseInt(offset, 10) || 0,
+    0
+  );
+
+  const requests = await findServiceRequestsByUser(
+    userId,
+    safeLimit,
+    safeOffset
+  );
+
+  return {
+    requests,
+    pagination: {
+      limit: safeLimit,
+      offset: safeOffset,
+      returned: requests.length,
+      hasMore: requests.length === safeLimit,
+    },
+  };
+}
+
+// =========================================================
+// CUSTOMER: VIEW ONE SERVICE REQUEST
+// =========================================================
+
+export async function getCustomerServiceRequestDetails({
+  userId,
+  requestId,
+}) {
+  validateUserId(userId);
+
+  if (!requestId) {
+    throw serviceError(
+      "Service request ID is required."
+    );
+  }
+
+  const request = await findServiceRequestByUser(
+    requestId,
+    userId
+  );
+
+  if (!request) {
+    throw serviceError(
+      "Service request not found.",
+      404,
+      "SERVICE_REQUEST_NOT_FOUND"
+    );
+  }
+
+  const documents = await findCustomerServiceDocuments(
+    request.id,
+    userId
+  );
+
+  const documentsWithLinks = await Promise.all(
+    documents.map(async (document) => {
+      const signedUrl = await createPrivateDocumentUrl(
+        document.storage_path
+      );
+
+      return {
+        id: document.id,
+        requestId: document.request_id,
+        documentType: document.document_type,
+        fileName: document.file_name,
+        mimeType: document.mime_type,
+        fileSize: Number(document.file_size),
+        createdAt: document.created_at,
+        downloadUrl: signedUrl.url,
+        downloadUrlExpiresIn: signedUrl.expiresIn,
+      };
+    })
+  );
+
+  return {
+    request,
+    documents: documentsWithLinks,
+  };
+}
+
+// =========================================================
+// CUSTOMER: GET ONE DOCUMENT DOWNLOAD LINK
+// =========================================================
+
+export async function getCustomerServiceDocumentDownload({
+  userId,
+  requestId,
+  documentId,
+}) {
+  validateUserId(userId);
+
+  if (!requestId || !documentId) {
+    throw serviceError(
+      "Service request ID and document ID are required."
+    );
+  }
+
+  const document = await findCustomerServiceDocument(
+    requestId,
+    documentId,
+    userId
+  );
+
+  if (!document) {
+    throw serviceError(
+      "Document not found or access denied.",
+      404,
+      "SERVICE_DOCUMENT_NOT_FOUND"
+    );
+  }
+
+  const signedUrl = await createPrivateDocumentUrl(
+    document.storage_path
+  );
+
+  return {
+    document: {
+      id: document.id,
+      requestId: document.request_id,
+      documentType: document.document_type,
+      fileName: document.file_name,
+      mimeType: document.mime_type,
+      fileSize: Number(document.file_size),
+      createdAt: document.created_at,
+    },
+
+    downloadUrl: signedUrl.url,
+    downloadUrlExpiresIn: signedUrl.expiresIn,
+  };
+}
+
+C:\Users\SON\evault-backend>(echo.   & echo ========== src\modules\services\services.admin.controller.js ==========   & type "src\modules\services\services.admin.controller.js" ) 
+ 
+========== src\modules\services\services.admin.controller.js ========== 
+
+import {
+  getAdminServiceRequests,
+  getAdminServiceRequestDetails,
+  processAdminServiceRequest,
+  uploadCompletedServiceDocuments,
+} from "./services.admin.service.js";
+
+function sendError(res, error, fallbackMessage) {
+  console.error(fallbackMessage, error);
+
+  return res.status(error.statusCode || 500).json({
+    success: false,
+    message: error.statusCode
+      ? error.message
+      : fallbackMessage,
+  });
+}
+
+// =========================================================
+// LIST SERVICE REQUESTS
+// =========================================================
+
+export async function listServiceRequests(req, res) {
+  try {
+    const result = await getAdminServiceRequests(
+      req.query || {}
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Service requests retrieved successfully.",
+      ...result,
+    });
+  } catch (error) {
+    return sendError(
+      res,
+      error,
+      "Failed to retrieve service requests."
+    );
+  }
+}
+
+// =========================================================
+// GET SERVICE REQUEST DETAILS
+// =========================================================
+
+export async function getServiceRequestDetails(req, res) {
+  try {
+    const request = await getAdminServiceRequestDetails(
+      req.params.identifier
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Service request retrieved successfully.",
+      data: request,
+    });
+  } catch (error) {
+    return sendError(
+      res,
+      error,
+      "Failed to retrieve service request."
+    );
+  }
+}
+
+// =========================================================
+// PROCESS SERVICE REQUEST
+// =========================================================
+
+export async function processServiceRequest(req, res) {
+  try {
+    const result = await processAdminServiceRequest({
+      requestId: req.params.identifier,
+      adminId: req.admin.adminId,
+      status: req.body?.status,
+      adminNotes: req.body?.adminNotes,
+      rejectionReason: req.body?.rejectionReason,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Service request status updated successfully.",
+      data: result,
+    });
+  } catch (error) {
+    return sendError(
+      res,
+      error,
+      "Failed to update service request."
+    );
+  }
+}
+
+// =========================================================
+// UPLOAD COMPLETED SERVICE DOCUMENTS
+// =========================================================
+
+export async function uploadServiceDocuments(req, res) {
+  try {
+    const result = await uploadCompletedServiceDocuments({
+      requestId: req.params.identifier,
+      adminId: req.admin.adminId,
+      files: req.files || [],
+      adminNotes: req.body?.adminNotes,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: result.message,
+      data: result,
+    });
+  } catch (error) {
+    return sendError(
+      res,
+      error,
+      "Failed to upload completed service documents."
+    );
+  }
+}
+
+C:\Users\SON\evault-backend>(echo.   & echo ========== src\modules\services\services.admin.repository.js ==========   & type "src\modules\services\services.admin.repository.js" ) 
+ 
+========== src\modules\services\services.admin.repository.js ========== 
+
+import db from "../../config/database.js";
+
+// =========================================================
+// ADMIN SERVICES - LIST REQUESTS
+// =========================================================
+
+export async function listAdminServiceRequests({
+  page = 1,
+  limit = 20,
+  search = "",
+  serviceType = "",
+  status = "",
+}) {
+  const conditions = [];
+  const values = [];
+
+  if (search) {
+    values.push(`%${search}%`);
+    const p = `$${values.length}`;
+
+    conditions.push(`(
+      sr.reference ILIKE ${p}
+      OR COALESCE(u.full_name, '') ILIKE ${p}
+      OR COALESCE(u.email, '') ILIKE ${p}
+      OR COALESCE(u.phone_number, '') ILIKE ${p}
+    )`);
+  }
+
+  if (serviceType) {
+    values.push(serviceType);
+    conditions.push(`sr.service_type = $${values.length}`);
+  }
+
+  if (status) {
+    values.push(status);
+    conditions.push(`sr.status = $${values.length}`);
+  }
+
+  const whereSql = conditions.length
+    ? `WHERE ${conditions.join(" AND ")}`
+    : "";
+
+  const limitIndex = values.length + 1;
+  const offsetIndex = values.length + 2;
+  const offset = (page - 1) * limit;
+
+  const [rowsResult, countResult] = await Promise.all([
+    db.query(
+      `SELECT
+         sr.id, sr.user_id, sr.reference,
+         sr.service_type, sr.entity_type,
+         sr.status, sr.payment_status,
+         sr.amount, sr.currency,
+         sr.submitted_at, sr.completed_at,
+         sr.created_at, sr.updated_at,
+         u.full_name AS customer_name,
+         u.username AS customer_username,
+         u.email AS customer_email,
+         u.phone_number AS customer_phone
+       FROM service_requests sr
+       INNER JOIN users u ON u.id = sr.user_id
+       ${whereSql}
+       ORDER BY sr.created_at DESC
+       LIMIT $${limitIndex}
+       OFFSET $${offsetIndex}`,
+      [...values, limit, offset]
+    ),
+
+    db.query(
+      `SELECT COUNT(*)::int AS total
+       FROM service_requests sr
+       INNER JOIN users u ON u.id = sr.user_id
+       ${whereSql}`,
+      values
+    ),
+  ]);
+
+  return {
+    rows: rowsResult.rows,
+    total: Number(countResult.rows[0]?.total || 0),
+  };
+}
+
+// =========================================================
+// ADMIN SERVICES - REQUEST DETAILS
+// =========================================================
+
+export async function findAdminServiceRequest(requestId) {
+  const requestResult = await db.query(
+    `SELECT
+       sr.*,
+       u.full_name AS customer_name,
+       u.username AS customer_username,
+       u.email AS customer_email,
+       u.phone_number AS customer_phone
+     FROM service_requests sr
+     INNER JOIN users u ON u.id = sr.user_id
+     WHERE sr.id::text = $1 OR sr.reference = $1
+     LIMIT 1`,
+    [String(requestId)]
+  );
+
+  const request = requestResult.rows[0];
+
+  if (!request) return null;
+
+  const documentsResult = await db.query(
+    `SELECT
+       id, request_id,
+       uploaded_by_user_id,
+       uploaded_by_admin_id,
+       document_type,
+       file_name,
+       mime_type,
+       file_size,
+       storage_bucket,
+       storage_path,
+       visibility,
+       metadata,
+       created_at
+     FROM service_request_documents
+     WHERE request_id = $1
+     ORDER BY created_at ASC`,
+    [request.id]
+  );
+
+  return {
+    ...request,
+    documents: documentsResult.rows,
+  };
+}
+
+// =========================================================
+// UPDATE SERVICE REQUEST STATUS
+// =========================================================
+
+export async function updateAdminServiceRequestStatus({
+  requestId,
+  adminId,
+  status,
+  adminNotes = null,
+  rejectionReason = null,
+}) {
+  const result = await db.query(
+    `UPDATE service_requests
+     SET
+       status = $1,
+       assigned_admin_id = COALESCE($2, assigned_admin_id),
+       admin_notes = COALESCE($3, admin_notes),
+       rejection_reason = $4,
+       updated_at = CURRENT_TIMESTAMP
+     WHERE id::text = $5 OR reference = $5
+     RETURNING
+       id, user_id, reference,
+       service_type, entity_type,
+       status, payment_status,
+       assigned_admin_id,
+       admin_notes, rejection_reason,
+       submitted_at, completed_at, updated_at`,
+    [
+      status,
+      adminId || null,
+      adminNotes,
+      rejectionReason,
+      String(requestId),
+    ]
+  );
+
+  return result.rows[0] || null;
+}
+
+C:\Users\SON\evault-backend>(echo.   & echo ========== src\modules\services\services.admin.service.js ==========   & type "src\modules\services\services.admin.service.js" ) 
+ 
+========== src\modules\services\services.admin.service.js ========== 
+
+import db from "../../config/database.js";
+
+import {
+  listAdminServiceRequests,
+  findAdminServiceRequest,
+  updateAdminServiceRequestStatus,
+} from "./services.admin.repository.js";
+
+import {
+  createServiceRequestDocument,
+} from "./services.repository.js";
+
+import {
+  createNotification,
+} from "../notification/notification.repository.js";
+
+import {
+  uploadPrivateDocument,
+  createPrivateDocumentUrl,
+  deletePrivateDocument,
+} from "../../services/supabase.storage.service.js";
+
+// =========================================================
+// HELPERS
+// =========================================================
+
+function makeError(message, statusCode = 400) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+}
+
+function toPositiveInteger(value, fallback, max) {
+  const parsed = Number.parseInt(value, 10);
+
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return fallback;
+  }
+
+  return Math.min(parsed, max);
+}
+
+function cleanSearch(value) {
+  return typeof value === "string"
+    ? value.trim().slice(0, 120)
+    : "";
+}
+
+function pagination(page, limit, total) {
+  return {
+    page,
+    limit,
+    total,
+    totalPages: Math.ceil(total / limit),
+    hasNextPage: page * limit < total,
+    hasPreviousPage: page > 1,
+  };
+}
+
+function safeFileName(name) {
+  const cleaned = String(name || "document")
+    .replace(/[^a-zA-Z0-9._-]/g, "_")
+    .slice(0, 180);
+
+  return cleaned || "document";
+}
+
+// =========================================================
+// FILE SIGNATURE VALIDATION
+// =========================================================
+
+function validateCompletedDocument(file) {
+  if (!file?.buffer || !Buffer.isBuffer(file.buffer)) {
+    throw makeError("An uploaded document is invalid.", 400);
+  }
+
+  if (file.buffer.length > 10 * 1024 * 1024) {
+    throw makeError("Each document must not exceed 10 MB.", 400);
+  }
+
+  const mimeType = file.mimetype;
+  const buffer = file.buffer;
+
+  // JPEG validation
+  if (mimeType === "image/jpeg") {
+    if (
+      buffer.length < 3 ||
+      buffer[0] !== 0xff ||
+      buffer[1] !== 0xd8 ||
+      buffer[2] !== 0xff
+    ) {
+      throw makeError("An uploaded JPEG file is invalid.", 400);
+    }
+
+    return;
+  }
+
+  // PNG validation
+  if (mimeType === "image/png") {
+    const pngSignature = Buffer.from([
+      0x89, 0x50, 0x4e, 0x47,
+      0x0d, 0x0a, 0x1a, 0x0a,
+    ]);
+
+    if (
+      buffer.length < 8 ||
+      !buffer.subarray(0, 8).equals(pngSignature)
+    ) {
+      throw makeError("An uploaded PNG file is invalid.", 400);
+    }
+
+    return;
+  }
+
+  // PDF validation
+  if (mimeType === "application/pdf") {
+    if (
+      buffer.length < 5 ||
+      buffer.subarray(0, 5).toString() !== "%PDF-"
+    ) {
+      throw makeError("An uploaded PDF file is invalid.", 400);
+    }
+
+    return;
+  }
+
+  throw makeError(
+    "Only PDF, JPEG and PNG documents are allowed.",
+    400
+  );
+}
+
+// =========================================================
+// LIST SERVICE REQUESTS
+// =========================================================
+
+export async function getAdminServiceRequests(query = {}) {
+  const page = toPositiveInteger(query.page, 1, 1000000);
+  const limit = toPositiveInteger(query.limit, 20, 100);
+
+  const search = cleanSearch(query.search);
+
+  const serviceType = cleanSearch(
+    query.serviceType
+  ).toUpperCase();
+
+  const status = cleanSearch(
+    query.status
+  ).toUpperCase();
+
+  const allowedTypes = ["CAC", "TIN", "SCUML"];
+
+  if (serviceType && !allowedTypes.includes(serviceType)) {
+    throw makeError("Invalid service type filter.", 400);
+  }
+
+  const result = await listAdminServiceRequests({
+    page,
+    limit,
+    search,
+    serviceType,
+    status,
+  });
+
+  return {
+    data: result.rows,
+    pagination: pagination(page, limit, result.total),
+  };
+}
+
+// =========================================================
+// SECURE DOCUMENT LINKS
+// =========================================================
+
+async function attachDocumentLinks(documents = []) {
+  return Promise.all(
+    documents.map(async (document) => {
+      const signedUrl = await createPrivateDocumentUrl(
+        document.storage_path
+      );
+
+      const {
+        storage_path,
+        storage_bucket,
+        ...safeDocument
+      } = document;
+
+      return {
+        ...safeDocument,
+
+        // Actual signed URL string
+        downloadUrl: signedUrl.url,
+
+        // Signed URL expiry in seconds
+        downloadUrlExpiresIn: signedUrl.expiresIn,
+      };
+    })
+  );
+}
+
+// =========================================================
+// GET SERVICE REQUEST DETAILS
+// =========================================================
+
+export async function getAdminServiceRequestDetails(requestId) {
+  if (!requestId) {
+    throw makeError("Service request ID is required.", 400);
+  }
+
+  const request = await findAdminServiceRequest(requestId);
+
+  if (!request) {
+    throw makeError("Service request not found.", 404);
+  }
+
+  return {
+    ...request,
+    documents: await attachDocumentLinks(request.documents),
+  };
+}
+
+// =========================================================
+// PROCESS SERVICE REQUEST
+// =========================================================
+
+export async function processAdminServiceRequest({
+  requestId,
+  adminId,
+  status,
+  adminNotes,
+  rejectionReason,
+}) {
+  if (!requestId) {
+    throw makeError("Service request ID is required.", 400);
+  }
+
+  if (!adminId) {
+    throw makeError("Administrator ID is required.", 400);
+  }
+
+  const allowedStatuses = [
+    "UNDER_REVIEW",
+    "PROCESSING",
+    "REJECTED",
+  ];
+
+  if (!allowedStatuses.includes(status)) {
+    throw makeError("Invalid service processing status.", 400);
+  }
+
+  if (
+    status === "REJECTED" &&
+    (!rejectionReason || !String(rejectionReason).trim())
+  ) {
+    throw makeError("A rejection reason is required.", 400);
+  }
+
+  const updated = await updateAdminServiceRequestStatus({
+    requestId,
+    adminId,
+    status,
+    adminNotes: adminNotes
+      ? String(adminNotes).trim()
+      : null,
+    rejectionReason: status === "REJECTED"
+      ? String(rejectionReason).trim()
+      : null,
+  });
+
+  if (!updated) {
+    throw makeError("Service request not found.", 404);
+  }
+
+  return updated;
+}
+
+// =========================================================
+// UPLOAD COMPLETED SERVICE DOCUMENTS
+// =========================================================
+
+export async function uploadCompletedServiceDocuments({
+  requestId,
+  adminId,
+  files = [],
+  adminNotes = null,
+}) {
+  if (!requestId) {
+    throw makeError("Service request ID is required.", 400);
+  }
+
+  if (!adminId) {
+    throw makeError("Administrator ID is required.", 400);
+  }
+
+  if (!Array.isArray(files) || files.length === 0) {
+    throw makeError("Please select at least one document.", 400);
+  }
+
+  if (files.length > 10) {
+    throw makeError("You can upload a maximum of 10 documents.", 400);
+  }
+
+  // Validate every document before uploading anything.
+  for (const file of files) {
+    validateCompletedDocument(file);
+  }
+
+  const client = await db.connect();
+  const uploadedObjects = [];
+
+  try {
+    await client.query("BEGIN");
+
+    // Lock the request to prevent simultaneous completion.
+    const requestResult = await client.query(
+      `SELECT
+         id,
+         user_id,
+         reference,
+         service_type,
+         status
+       FROM service_requests
+       WHERE id::text = $1 OR reference = $1
+       LIMIT 1
+       FOR UPDATE`,
+      [String(requestId)]
+    );
+
+    const request = requestResult.rows[0];
+
+    if (!request) {
+      throw makeError("Service request not found.", 404);
+    }
+
+    if (request.status === "COMPLETED") {
+      throw makeError(
+        "This service request is already completed.",
+        409
+      );
+    }
+
+    if (request.status === "REJECTED") {
+      throw makeError(
+        "Rejected requests cannot be completed.",
+        409
+      );
+    }
+
+    const savedDocuments = [];
+
+    // Upload completed documents to private Supabase storage.
+    for (const file of files) {
+      const uploaded = await uploadPrivateDocument({
+        buffer: file.buffer,
+        mimeType: file.mimetype,
+        folder: `service-requests/${request.id}/completed`,
+      });
+
+      uploadedObjects.push(uploaded);
+
+      // Save document metadata in PostgreSQL.
+      const document = await createServiceRequestDocument(
+        {
+          requestId: request.id,
+          uploadedByAdminId: adminId,
+          documentType: "COMPLETED_DOCUMENT",
+          fileName: safeFileName(file.originalname),
+          mimeType: file.mimetype,
+          fileSize: file.buffer.length,
+          storageBucket: uploaded.bucket,
+          storagePath: uploaded.path,
+          visibility: "CUSTOMER",
+          metadata: {
+            originalName: file.originalname,
+            uploadedAs: "completed_service_document",
+          },
+        },
+        client
+      );
+
+      savedDocuments.push(document);
+    }
+
+    // Mark the service request as completed.
+    const completedResult = await client.query(
+      `UPDATE service_requests
+       SET
+         status = 'COMPLETED',
+         assigned_admin_id = $1,
+         admin_notes = COALESCE($2, admin_notes),
+         completed_at = CURRENT_TIMESTAMP,
+         updated_at = CURRENT_TIMESTAMP
+       WHERE id = $3
+       RETURNING
+         id,
+         user_id,
+         reference,
+         service_type,
+         entity_type,
+         status,
+         payment_status,
+         completed_at,
+         updated_at`,
+      [
+        adminId,
+        adminNotes ? String(adminNotes).trim() : null,
+        request.id,
+      ]
+    );
+
+    const completedRequest = completedResult.rows[0];
+
+    // Notify the customer in the same database transaction.
+    await createNotification(
+      {
+        userId: request.user_id,
+        title: "Service Request Completed",
+        message: `Your ${request.service_type} service request (${request.reference}) has been completed. Your documents are now available in eVault.`,
+        type: "INFO",
+        metadata: {
+          serviceRequestId: request.id,
+          reference: request.reference,
+          serviceType: request.service_type,
+        },
+      },
+      client
+    );
+
+    await client.query("COMMIT");
+
+    return {
+      request: completedRequest,
+
+      documents: savedDocuments.map((document) => {
+        const {
+          storage_path,
+          storage_bucket,
+          ...safeDocument
+        } = document;
+
+        return safeDocument;
+      }),
+
+      message:
+        "Documents uploaded and service request completed successfully.",
+    };
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      console.error(
+        "Service request rollback failed:",
+        rollbackError
+      );
+    }
+
+    // Remove uploaded files if the database operation failed.
+    for (const uploaded of uploadedObjects) {
+      try {
+        await deletePrivateDocument(uploaded.path);
+      } catch (cleanupError) {
+        console.error(
+          "Failed to clean up uploaded document:",
+          cleanupError
+        );
+      }
+    }
+
+    throw error;
+  } finally {
+    client.release();
+  }
+}

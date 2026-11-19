@@ -1,4 +1,3 @@
-
 import db from "../../config/database.js";
 
 import {
@@ -19,6 +18,7 @@ import {
   uploadPrivateDocument,
   createPrivateDocumentUrl,
   deletePrivateDocument,
+  downloadPrivateDocument,
 } from "../../services/supabase.storage.service.js";
 
 // =========================================================
@@ -188,11 +188,7 @@ async function attachDocumentLinks(documents = []) {
 
       return {
         ...safeDocument,
-
-        // Actual signed URL string
         downloadUrl: signedUrl.url,
-
-        // Signed URL expiry in seconds
         downloadUrlExpiresIn: signedUrl.expiresIn,
       };
     })
@@ -301,7 +297,6 @@ export async function uploadCompletedServiceDocuments({
     throw makeError("You can upload a maximum of 10 documents.", 400);
   }
 
-  // Validate every document before uploading anything.
   for (const file of files) {
     validateCompletedDocument(file);
   }
@@ -312,7 +307,6 @@ export async function uploadCompletedServiceDocuments({
   try {
     await client.query("BEGIN");
 
-    // Lock the request to prevent simultaneous completion.
     const requestResult = await client.query(
       `SELECT
          id,
@@ -349,7 +343,6 @@ export async function uploadCompletedServiceDocuments({
 
     const savedDocuments = [];
 
-    // Upload completed documents to private Supabase storage.
     for (const file of files) {
       const uploaded = await uploadPrivateDocument({
         buffer: file.buffer,
@@ -359,7 +352,6 @@ export async function uploadCompletedServiceDocuments({
 
       uploadedObjects.push(uploaded);
 
-      // Save document metadata in PostgreSQL.
       const document = await createServiceRequestDocument(
         {
           requestId: request.id,
@@ -382,7 +374,6 @@ export async function uploadCompletedServiceDocuments({
       savedDocuments.push(document);
     }
 
-    // Mark the service request as completed.
     const completedResult = await client.query(
       `UPDATE service_requests
        SET
@@ -411,7 +402,6 @@ export async function uploadCompletedServiceDocuments({
 
     const completedRequest = completedResult.rows[0];
 
-    // Notify the customer in the same database transaction.
     await createNotification(
       {
         userId: request.user_id,
@@ -455,7 +445,6 @@ export async function uploadCompletedServiceDocuments({
       );
     }
 
-    // Remove uploaded files if the database operation failed.
     for (const uploaded of uploadedObjects) {
       try {
         await deletePrivateDocument(uploaded.path);
@@ -471,4 +460,66 @@ export async function uploadCompletedServiceDocuments({
   } finally {
     client.release();
   }
+}
+
+// =========================================================
+// DOWNLOAD ALL SERVICE REQUEST DOCUMENTS AS ZIP
+// =========================================================
+
+export async function getAdminServiceRequestZip(requestId) {
+  if (!requestId) {
+    throw makeError("Service request ID is required.", 400);
+  }
+
+  const request = await findAdminServiceRequest(requestId);
+
+  if (!request) {
+    throw makeError("Service request not found.", 404);
+  }
+
+  if (!request.documents || request.documents.length === 0) {
+    throw makeError(
+      "No documents are available for this application.",
+      404
+    );
+  }
+
+  const files = [];
+
+  for (let index = 0; index < request.documents.length; index++) {
+    const document = request.documents[index];
+
+    if (!document.storage_path) {
+      continue;
+    }
+
+    const buffer = await downloadPrivateDocument(
+      document.storage_path,
+      document.storage_bucket
+    );
+
+    const safeName = safeFileName(document.file_name);
+
+    const folder = document.uploaded_by_admin_id
+      ? "Completed Documents"
+      : "Submitted Documents";
+
+    files.push({
+      name: `${folder}/${String(index + 1).padStart(2, "0")}_${safeName}`,
+      buffer,
+    });
+  }
+
+  if (files.length === 0) {
+    throw makeError(
+      "No downloadable documents were found.",
+      404
+    );
+  }
+
+  return {
+    reference: request.reference,
+    serviceType: request.service_type,
+    files,
+  };
 }

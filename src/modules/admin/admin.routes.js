@@ -1,4 +1,3 @@
-
 import express from "express";
 
 import { login, me } from "./admin.controller.js";
@@ -31,6 +30,7 @@ import {
   getServiceRequestDetails,
   processServiceRequest,
   uploadServiceDocuments,
+  downloadServiceRequestZip,
 } from "../services/services.admin.controller.js";
 
 const router = express.Router();
@@ -141,6 +141,18 @@ router.get(
     "SUPPORT"
   ),
   getServiceRequestDetails
+);
+
+// Download all application documents as ZIP.
+router.get(
+  "/services/requests/:identifier/download-zip",
+  requireAdminRoles(
+    "SUPER_ADMIN",
+    "ADMIN",
+    "OPERATIONS",
+    "SUPPORT"
+  ),
+  downloadServiceRequestZip
 );
 
 router.patch(
