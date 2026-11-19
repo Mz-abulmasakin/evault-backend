@@ -1,8 +1,5 @@
 
-import { createRequire } from "node:module";
-
-const require = createRequire(import.meta.url);
-const archiver = require("archiver");
+import { ZipArchive } from "archiver";
 
 import {
   getAdminServiceRequests,
@@ -148,7 +145,8 @@ export async function downloadServiceRequestZip(req, res) {
       result.reference || "service-request"
     ).replace(/[^a-zA-Z0-9_-]/g, "_");
 
-    const archive = archiver("zip", {
+    // Archiver v8 uses the ZipArchive class.
+    const archive = new ZipArchive({
       zlib: { level: 6 },
     });
 
@@ -156,7 +154,7 @@ export async function downloadServiceRequestZip(req, res) {
       console.warn("ZIP archive warning:", error);
 
       if (error.code !== "ENOENT") {
-        res.destroy(error);
+        archive.destroy(error);
       }
     });
 

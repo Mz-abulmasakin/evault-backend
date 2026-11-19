@@ -1,3 +1,4 @@
+
 import db from "../../config/database.js";
 
 import {
@@ -82,7 +83,6 @@ function validateCompletedDocument(file) {
   const mimeType = file.mimetype;
   const buffer = file.buffer;
 
-  // JPEG validation
   if (mimeType === "image/jpeg") {
     if (
       buffer.length < 3 ||
@@ -96,7 +96,6 @@ function validateCompletedDocument(file) {
     return;
   }
 
-  // PNG validation
   if (mimeType === "image/png") {
     const pngSignature = Buffer.from([
       0x89, 0x50, 0x4e, 0x47,
@@ -113,7 +112,6 @@ function validateCompletedDocument(file) {
     return;
   }
 
-  // PDF validation
   if (mimeType === "application/pdf") {
     if (
       buffer.length < 5 ||
@@ -477,19 +475,75 @@ export async function getAdminServiceRequestZip(requestId) {
     throw makeError("Service request not found.", 404);
   }
 
-  if (!request.documents || request.documents.length === 0) {
-    throw makeError(
-      "No documents are available for this application.",
-      404
-    );
+  // Parse application details stored in PostgreSQL JSONB.
+  let applicationDetails = request.details ?? {};
+
+  if (typeof applicationDetails === "string") {
+    try {
+      applicationDetails = JSON.parse(applicationDetails);
+    } catch {
+      applicationDetails = {
+        originalDetails: applicationDetails,
+      };
+    }
   }
+
+  // Application information.
+  const applicationInformation = {
+    reference: request.reference,
+    serviceType: request.service_type,
+    entityType: request.entity_type,
+    status: request.status,
+    paymentStatus: request.payment_status,
+    amount: request.amount,
+    currency: request.currency,
+    submittedAt: request.submitted_at,
+    completedAt: request.completed_at,
+    createdAt: request.created_at,
+    updatedAt: request.updated_at,
+    applicationDetails,
+  };
+
+  // Customer information.
+  const customerInformation = {
+    fullName: request.customer_name,
+    username: request.customer_username,
+    email: request.customer_email,
+    phoneNumber: request.customer_phone,
+  };
 
   const files = [];
 
-  for (let index = 0; index < request.documents.length; index++) {
-    const document = request.documents[index];
+  files.push({
+    name: "Application Details.json",
+    buffer: Buffer.from(
+      JSON.stringify(applicationInformation, null, 2),
+      "utf8"
+    ),
+  });
 
+  files.push({
+    name: "Customer Information.json",
+    buffer: Buffer.from(
+      JSON.stringify(customerInformation, null, 2),
+      "utf8"
+    ),
+  });
+
+  // Download actual documents from their recorded Supabase buckets.
+  const documents = Array.isArray(request.documents)
+    ? request.documents
+    : [];
+
+  let submittedCount = 0;
+  let completedCount = 0;
+
+  for (const document of documents) {
     if (!document.storage_path) {
+      console.warn(
+        "Skipping document without storage path:",
+        document.id
+      );
       continue;
     }
 
@@ -498,24 +552,64 @@ export async function getAdminServiceRequestZip(requestId) {
       document.storage_bucket
     );
 
-    const safeName = safeFileName(document.file_name);
+    if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+      throw new Error(
+        `Downloaded document is empty: ${document.file_name}`
+      );
+    }
 
-    const folder = document.uploaded_by_admin_id
+    const isAdminDocument = Boolean(
+      document.uploaded_by_admin_id
+    );
+
+    const folder = isAdminDocument
       ? "Completed Documents"
       : "Submitted Documents";
 
+    if (isAdminDocument) {
+      completedCount++;
+    } else {
+      submittedCount++;
+    }
+
+    const safeName = safeFileName(document.file_name);
+
+    const number = String(
+      submittedCount + completedCount
+    ).padStart(2, "0");
+
     files.push({
-      name: `${folder}/${String(index + 1).padStart(2, "0")}_${safeName}`,
+      name: `${folder}/${number}_${safeName}`,
       buffer,
     });
   }
 
-  if (files.length === 0) {
-    throw makeError(
-      "No downloadable documents were found.",
-      404
-    );
-  }
+  // Document manifest.
+  const manifest = {
+    reference: request.reference,
+    serviceType: request.service_type,
+    totalDocuments: submittedCount + completedCount,
+    submittedDocuments: submittedCount,
+    completedDocuments: completedCount,
+    documents: documents.map((document) => ({
+      fileName: document.file_name,
+      documentType: document.document_type,
+      mimeType: document.mime_type,
+      fileSize: document.file_size,
+      uploadedBy: document.uploaded_by_admin_id
+        ? "ADMIN"
+        : "CUSTOMER",
+      uploadedAt: document.created_at,
+    })),
+  };
+
+  files.push({
+    name: "Document Manifest.json",
+    buffer: Buffer.from(
+      JSON.stringify(manifest, null, 2),
+      "utf8"
+    ),
+  });
 
   return {
     reference: request.reference,
