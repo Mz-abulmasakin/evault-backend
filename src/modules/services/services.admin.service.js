@@ -1,5 +1,6 @@
 
 import db from "../../config/database.js";
+import PDFDocument from "pdfkit";
 
 import {
   listAdminServiceRequests,
@@ -461,6 +462,289 @@ export async function uploadCompletedServiceDocuments({
 }
 
 // =========================================================
+// PDF FORMATTING HELPERS
+// =========================================================
+
+function formatPdfLabel(value) {
+  return String(value)
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/[_-]/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function formatPdfValue(value) {
+  if (value === null || value === undefined || value === "") {
+    return "Not provided";
+  }
+
+  if (typeof value === "boolean") {
+    return value ? "Yes" : "No";
+  }
+
+  if (typeof value === "object") {
+    return "";
+  }
+
+  if (typeof value === "string") {
+    return value;
+  }
+
+  return String(value);
+}
+
+function renderPdfObject(doc, object, depth = 0) {
+  if (!object || typeof object !== "object") return;
+
+  const entries = Array.isArray(object)
+    ? object.map((value, index) => [String(index + 1), value])
+    : Object.entries(object);
+
+  for (const [key, value] of entries) {
+    if (depth > 8) return;
+
+    const label = formatPdfLabel(key);
+    const indent = Math.min(depth * 14, 70);
+
+    if (Array.isArray(value)) {
+      doc.moveDown(0.3);
+
+      doc
+        .font("Helvetica-Bold")
+        .fontSize(10)
+        .fillColor("#2a5fd3")
+        .text(`${label} (${value.length})`, {
+          indent,
+        });
+
+      if (value.length === 0) {
+        doc
+          .font("Helvetica")
+          .fontSize(9)
+          .fillColor("#555555")
+          .text("No records available.", {
+            indent: indent + 12,
+          });
+      } else {
+        value.forEach((item, index) => {
+          doc.moveDown(0.2);
+
+          doc
+            .font("Helvetica-Bold")
+            .fontSize(9)
+            .fillColor("#333333")
+            .text(`${label} ${index + 1}`, {
+              indent: indent + 12,
+            });
+
+          if (item && typeof item === "object") {
+            renderPdfObject(doc, item, depth + 1);
+          } else {
+            doc
+              .font("Helvetica")
+              .fontSize(9)
+              .fillColor("#444444")
+              .text(formatPdfValue(item), {
+                indent: indent + 24,
+                width: 450 - indent,
+              });
+          }
+        });
+      }
+
+      continue;
+    }
+
+    if (value && typeof value === "object") {
+      doc.moveDown(0.25);
+
+      doc
+        .font("Helvetica-Bold")
+        .fontSize(10)
+        .fillColor("#2a5fd3")
+        .text(label, {
+          indent,
+        });
+
+      renderPdfObject(doc, value, depth + 1);
+      continue;
+    }
+
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(9)
+      .fillColor("#333333")
+      .text(`${label}:`, {
+        indent,
+      });
+
+    doc
+      .font("Helvetica")
+      .fontSize(9)
+      .fillColor("#444444")
+      .text(formatPdfValue(value), {
+        indent: indent + 8,
+        width: 480 - indent,
+      });
+
+    doc.moveDown(0.2);
+  }
+}
+
+// =========================================================
+// CREATE BRANDED PDF
+// =========================================================
+
+function createReadablePdf({
+  title,
+  reference,
+  serviceType,
+  sections,
+}) {
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({
+      size: "A4",
+      margins: {
+        top: 55,
+        bottom: 55,
+        left: 50,
+        right: 50,
+      },
+      bufferPages: true,
+      info: {
+        Title: title,
+        Author: "eVault - iServeBay Ltd",
+        Subject: `${serviceType} Service Request`,
+      },
+    });
+
+    const chunks = [];
+    let settled = false;
+
+    doc.on("data", (chunk) => {
+      chunks.push(chunk);
+    });
+
+    doc.on("error", (error) => {
+      if (!settled) {
+        settled = true;
+        reject(error);
+      }
+    });
+
+    doc.on("end", () => {
+      if (!settled) {
+        settled = true;
+        resolve(Buffer.concat(chunks));
+      }
+    });
+
+    try {
+      // eVault branding
+      doc
+        .font("Helvetica-Bold")
+        .fontSize(22)
+        .fillColor("#2a5fd3")
+        .text("eVault", {
+          align: "center",
+        });
+
+      doc
+        .font("Helvetica")
+        .fontSize(9)
+        .fillColor("#666666")
+        .text("Electronic Vault | Powered by iServeBay Ltd", {
+          align: "center",
+        });
+
+      doc.moveDown(1);
+
+      doc
+        .font("Helvetica-Bold")
+        .fontSize(16)
+        .fillColor("#222222")
+        .text(title, {
+          align: "center",
+        });
+
+      doc.moveDown(0.7);
+
+      doc
+        .font("Helvetica")
+        .fontSize(9)
+        .fillColor("#555555")
+        .text(`Application Reference: ${reference || "N/A"}`);
+
+      doc.text(`Service Type: ${serviceType || "N/A"}`);
+
+      doc.text(
+        `Generated: ${new Date().toLocaleString("en-NG")}`
+      );
+
+      doc.moveDown(1);
+
+      doc
+        .moveTo(50, doc.y)
+        .lineTo(545, doc.y)
+        .strokeColor("#2a5fd3")
+        .lineWidth(1.5)
+        .stroke();
+
+      doc.moveDown(1);
+
+      for (const section of sections) {
+        doc
+          .font("Helvetica-Bold")
+          .fontSize(12)
+          .fillColor("#2a5fd3")
+          .text(section.heading);
+
+        doc.moveDown(0.4);
+
+        renderPdfObject(doc, section.data);
+
+        doc.moveDown(0.7);
+      }
+
+      // Footer on every page
+      const range = doc.bufferedPageRange();
+
+      for (
+        let page = range.start;
+        page < range.start + range.count;
+        page++
+      ) {
+        doc.switchToPage(page);
+
+        const footerY = doc.page.height - 35;
+
+        doc
+          .font("Helvetica")
+          .fontSize(8)
+          .fillColor("#777777")
+          .text(
+            `eVault | ${reference || "Service Request"} | Page ${page + 1}`,
+            50,
+            footerY,
+            {
+              width: 495,
+              align: "center",
+            }
+          );
+      }
+
+      doc.end();
+    } catch (error) {
+      if (!settled) {
+        settled = true;
+        reject(error);
+      }
+
+      doc.destroy();
+    }
+  });
+}
+
+// =========================================================
 // DOWNLOAD ALL SERVICE REQUEST DOCUMENTS AS ZIP
 // =========================================================
 
@@ -475,7 +759,7 @@ export async function getAdminServiceRequestZip(requestId) {
     throw makeError("Service request not found.", 404);
   }
 
-  // Parse application details stored in PostgreSQL JSONB.
+  // Parse PostgreSQL JSONB application details.
   let applicationDetails = request.details ?? {};
 
   if (typeof applicationDetails === "string") {
@@ -488,7 +772,21 @@ export async function getAdminServiceRequestZip(requestId) {
     }
   }
 
-  // Application information.
+  if (
+    !applicationDetails ||
+    typeof applicationDetails !== "object"
+  ) {
+    applicationDetails = {
+      applicationDetails,
+    };
+  }
+
+  const files = [];
+
+  // -------------------------------------------------------
+  // 1. APPLICATION DETAILS PDF
+  // -------------------------------------------------------
+
   const applicationInformation = {
     reference: request.reference,
     serviceType: request.service_type,
@@ -501,10 +799,33 @@ export async function getAdminServiceRequestZip(requestId) {
     completedAt: request.completed_at,
     createdAt: request.created_at,
     updatedAt: request.updated_at,
-    applicationDetails,
   };
 
-  // Customer information.
+  const applicationPdf = await createReadablePdf({
+    title: "Application Details",
+    reference: request.reference,
+    serviceType: request.service_type,
+    sections: [
+      {
+        heading: "Application Information",
+        data: applicationInformation,
+      },
+      {
+        heading: "Submitted Application Details",
+        data: applicationDetails,
+      },
+    ],
+  });
+
+  files.push({
+    name: "Application Details.pdf",
+    buffer: applicationPdf,
+  });
+
+  // -------------------------------------------------------
+  // 2. CUSTOMER INFORMATION PDF
+  // -------------------------------------------------------
+
   const customerInformation = {
     fullName: request.customer_name,
     username: request.customer_username,
@@ -512,25 +833,27 @@ export async function getAdminServiceRequestZip(requestId) {
     phoneNumber: request.customer_phone,
   };
 
-  const files = [];
-
-  files.push({
-    name: "Application Details.json",
-    buffer: Buffer.from(
-      JSON.stringify(applicationInformation, null, 2),
-      "utf8"
-    ),
+  const customerPdf = await createReadablePdf({
+    title: "Customer Information",
+    reference: request.reference,
+    serviceType: request.service_type,
+    sections: [
+      {
+        heading: "Customer Details",
+        data: customerInformation,
+      },
+    ],
   });
 
   files.push({
-    name: "Customer Information.json",
-    buffer: Buffer.from(
-      JSON.stringify(customerInformation, null, 2),
-      "utf8"
-    ),
+    name: "Customer Information.pdf",
+    buffer: customerPdf,
   });
 
-  // Download actual documents from their recorded Supabase buckets.
+  // -------------------------------------------------------
+  // 3. DOWNLOAD ORIGINAL SUPABASE DOCUMENTS
+  // -------------------------------------------------------
+
   const documents = Array.isArray(request.documents)
     ? request.documents
     : [];
@@ -538,7 +861,11 @@ export async function getAdminServiceRequestZip(requestId) {
   let submittedCount = 0;
   let completedCount = 0;
 
-  for (const document of documents) {
+  const manifestDocuments = [];
+
+  for (let index = 0; index < documents.length; index++) {
+    const document = documents[index];
+
     if (!document.storage_path) {
       console.warn(
         "Skipping document without storage path:",
@@ -573,42 +900,56 @@ export async function getAdminServiceRequestZip(requestId) {
     }
 
     const safeName = safeFileName(document.file_name);
-
-    const number = String(
-      submittedCount + completedCount
-    ).padStart(2, "0");
+    const number = String(index + 1).padStart(2, "0");
 
     files.push({
       name: `${folder}/${number}_${safeName}`,
       buffer,
     });
+
+    manifestDocuments.push({
+      fileName: document.file_name,
+      documentType: document.document_type,
+      mimeType: document.mime_type,
+      fileSize: document.file_size,
+      uploadedBy: isAdminDocument ? "ADMIN" : "CUSTOMER",
+      uploadedAt: document.created_at,
+    });
   }
 
-  // Document manifest.
+  // -------------------------------------------------------
+  // 4. DOCUMENT MANIFEST PDF
+  // -------------------------------------------------------
+
   const manifest = {
     reference: request.reference,
     serviceType: request.service_type,
     totalDocuments: submittedCount + completedCount,
     submittedDocuments: submittedCount,
     completedDocuments: completedCount,
-    documents: documents.map((document) => ({
-      fileName: document.file_name,
-      documentType: document.document_type,
-      mimeType: document.mime_type,
-      fileSize: document.file_size,
-      uploadedBy: document.uploaded_by_admin_id
-        ? "ADMIN"
-        : "CUSTOMER",
-      uploadedAt: document.created_at,
-    })),
   };
 
+  const manifestPdf = await createReadablePdf({
+    title: "Document Manifest",
+    reference: request.reference,
+    serviceType: request.service_type,
+    sections: [
+      {
+        heading: "Document Summary",
+        data: manifest,
+      },
+      {
+        heading: "Document Register",
+        data: {
+          documents: manifestDocuments,
+        },
+      },
+    ],
+  });
+
   files.push({
-    name: "Document Manifest.json",
-    buffer: Buffer.from(
-      JSON.stringify(manifest, null, 2),
-      "utf8"
-    ),
+    name: "Document Manifest.pdf",
+    buffer: manifestPdf,
   });
 
   return {
